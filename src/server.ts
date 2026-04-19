@@ -1,7 +1,23 @@
 import http from "node:http";
-import type { AuthedUser, PrInfo, PrRef } from "./gh.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  addPendingThread,
+  createPendingReview,
+  disableAutoMerge,
+  fetchAutoMerge,
+  fetchPendingReview,
+  fetchReviewComments,
+  submitPendingReview,
+  type AuthedUser,
+  type AutoMergeState,
+  type DiffSide,
+  type PendingReview,
+  type PrInfo,
+  type PrRef,
+  type ReviewComment,
+} from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
-import type { ThreadIndex } from "./threads.js";
+import { buildThreadIndex } from "./threads.js";
 import { renderPage } from "./ui.js";
 
 export interface ServerOptions {
@@ -10,7 +26,8 @@ export interface ServerOptions {
   diff: string;
   authedUser: AuthedUser | null;
   generatedMatcher: GeneratedMatcher;
-  threadIndex: ThreadIndex;
+  initialReviewComments: ReviewComment[];
+  initialPendingReview: PendingReview | null;
   port?: number;
 }
 
@@ -20,62 +37,145 @@ export interface RunningServer {
   close: () => Promise<void>;
 }
 
-export function startServer(opts: ServerOptions): Promise<RunningServer> {
+export async function startServer(
+  opts: ServerOptions,
+): Promise<RunningServer> {
   const prPath = `/${encodeURIComponent(opts.ref.owner)}/${encodeURIComponent(opts.ref.repo)}/pull/${opts.ref.number}`;
   const filesPath = `${prPath}/files`;
 
-  // Inputs are immutable for the lifetime of the process, so render once.
+  let comments = opts.initialReviewComments;
+  let pendingReview = opts.initialPendingReview;
+  let cachedHtml: string | null = null;
   const prJson = JSON.stringify(opts.pr, null, 2);
-  const html = renderPage(
-    opts.pr,
-    opts.diff,
-    opts.generatedMatcher,
-    opts.authedUser,
-    opts.threadIndex,
-  );
 
-  const server = http.createServer((req, res) => {
+  const renderHtml = () => {
+    if (cachedHtml) return cachedHtml;
+    const pendingIds = new Set(pendingReview?.commentIds ?? []);
+    const threadIndex = buildThreadIndex(comments, pendingIds);
+    cachedHtml = renderPage(
+      opts.pr,
+      opts.diff,
+      opts.generatedMatcher,
+      opts.authedUser,
+      threadIndex,
+      pendingReview,
+    );
+    return cachedHtml;
+  };
+
+  const refreshReview = async () => {
+    const [fresh, pending] = await Promise.all([
+      fetchReviewComments(opts.ref),
+      fetchPendingReview(opts.ref),
+    ]);
+    comments = fresh;
+    pendingReview = pending;
+    cachedHtml = null;
+  };
+
+  const ensurePendingReview = async (): Promise<string> => {
+    if (pendingReview) return pendingReview.id;
+    const id = await createPendingReview(opts.pr.nodeId, "");
+    pendingReview = { id, databaseId: 0, body: "", commentIds: [] };
+    return id;
+  };
+
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (req.method !== "GET") {
-        res.writeHead(405, { "content-type": "text/plain" });
-        res.end("Method not allowed");
-        return;
-      }
+      const path = url.pathname;
 
-      if (url.pathname === "/" || url.pathname === "/index.html") {
+      if (path === "/" || path === "/index.html") {
         res.writeHead(302, { location: prPath });
         res.end();
         return;
       }
 
-      if (url.pathname === prPath || url.pathname === filesPath) {
-        res.writeHead(200, {
-          "content-type": "text/html; charset=utf-8",
-          "cache-control": "no-store",
-        });
-        res.end(html);
-        return;
+      if (req.method === "GET") {
+        if (path === prPath || path === filesPath) {
+          res.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+          });
+          res.end(renderHtml());
+          return;
+        }
+        if (path === `${prPath}.diff` || path === "/raw.diff") {
+          res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+          res.end(opts.diff);
+          return;
+        }
+        if (path === `${prPath}.json` || path === "/pr.json") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(prJson);
+          return;
+        }
+        if (path === "/api/auto-merge") {
+          const state = await fetchAutoMerge(opts.ref);
+          return json(res, 200, state);
+        }
       }
 
-      if (url.pathname === `${prPath}.diff` || url.pathname === "/raw.diff") {
-        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-        res.end(opts.diff);
-        return;
-      }
+      if (req.method === "POST") {
+        if (path === "/api/comment") {
+          const body = (await readJson(req)) as {
+            path: string;
+            line: number;
+            side: DiffSide;
+            body: string;
+          };
+          if (
+            !body?.path ||
+            !Number.isFinite(body.line) ||
+            (body.side !== "LEFT" && body.side !== "RIGHT") ||
+            !body.body?.trim()
+          ) {
+            return json(res, 400, { error: "invalid comment payload" });
+          }
+          const reviewId = await ensurePendingReview();
+          await addPendingThread({
+            reviewId,
+            body: body.body,
+            path: body.path,
+            line: body.line,
+            side: body.side,
+          });
+          await refreshReview();
+          return json(res, 200, { ok: true });
+        }
 
-      if (url.pathname === `${prPath}.json` || url.pathname === "/pr.json") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(prJson);
-        return;
+        if (path === "/api/submit") {
+          const body = (await readJson(req)) as {
+            event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+            body: string;
+          };
+          if (
+            body.event !== "APPROVE" &&
+            body.event !== "REQUEST_CHANGES" &&
+            body.event !== "COMMENT"
+          ) {
+            return json(res, 400, { error: "invalid event" });
+          }
+          const reviewId = await ensurePendingReview();
+          await submitPendingReview(reviewId, body.event, body.body ?? "");
+          await refreshReview();
+          return json(res, 200, { ok: true });
+        }
+
+        if (path === "/api/disable-auto-merge") {
+          await disableAutoMerge(opts.pr.nodeId);
+          const state: AutoMergeState = await fetchAutoMerge(opts.ref);
+          return json(res, 200, state);
+        }
       }
 
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("Not found");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.writeHead(500, { "content-type": "text/plain" });
-      res.end(`Internal error: ${message}`);
+      // Surface GitHub API errors to the client for debugging.
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: message }));
     }
   });
 
@@ -93,11 +193,38 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         prUrl: `${baseUrl}${prPath}`,
         close: () =>
           new Promise<void>((res, rej) => {
-            // Drop live keep-alive connections so close() actually returns.
             server.closeAllConnections();
             server.close((err) => (err ? rej(err) : res()));
           }),
       });
     });
+  });
+}
+
+function json(res: ServerResponse, status: number, body: unknown) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function readJson(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let buf = "";
+    req.on("data", (c) => {
+      buf += c.toString();
+      // Cap at ~1 MB to avoid runaway requests.
+      if (buf.length > 1_000_000) {
+        req.destroy();
+        reject(new Error("request body too large"));
+      }
+    });
+    req.on("end", () => {
+      if (!buf) return resolve({});
+      try {
+        resolve(JSON.parse(buf));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on("error", reject);
   });
 }

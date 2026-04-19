@@ -29,6 +29,7 @@ export async function fetchAuthedUser(): Promise<AuthedUser | null> {
 
 export interface PrInfo {
   number: number;
+  nodeId: string; // GraphQL global ID; needed for review/auto-merge mutations.
   title: string;
   state: string;
   isDraft: boolean;
@@ -62,6 +63,7 @@ export async function fetchPrInfo(ref: PrRef): Promise<PrInfo> {
   ]);
   return {
     number: data.number,
+    nodeId: data.node_id ?? "",
     title: data.title,
     state: data.state,
     isDraft: Boolean(data.draft),
@@ -133,6 +135,7 @@ function synthesizeFileDiff(f: any): string {
 export interface ReviewComment {
   id: number;
   inReplyToId: number | null;
+  pullRequestReviewId: number | null;
   userLogin: string;
   userAvatarUrl: string;
   body: string;
@@ -157,6 +160,7 @@ export async function fetchReviewComments(
   return arr.map((c) => ({
     id: c.id,
     inReplyToId: c.in_reply_to_id ?? null,
+    pullRequestReviewId: c.pull_request_review_id ?? null,
     userLogin: c.user?.login ?? "",
     userAvatarUrl: c.user?.avatar_url ?? "",
     body: c.body ?? "",
@@ -198,6 +202,167 @@ export async function fetchFileAtRef(
 
 async function ghApiJson<T>(apiArgs: string[]): Promise<T> {
   return JSON.parse(await runGh(["api", ...apiArgs])) as T;
+}
+
+export interface PendingReview {
+  id: string; // GraphQL node ID
+  databaseId: number; // REST integer id
+  body: string;
+  commentIds: number[]; // databaseId of each comment in this pending review
+}
+
+export async function fetchPendingReview(
+  ref: PrRef,
+): Promise<PendingReview | null> {
+  const query = `
+    query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$num){
+          reviews(first:20,states:[PENDING]){
+            nodes{
+              id databaseId body
+              author{ login }
+              comments(first:100){ nodes{ databaseId } }
+            }
+          }
+        }
+      }
+      viewer{ login }
+    }`;
+  try {
+    const res = await gqlQuery<any>(query, {
+      owner: ref.owner,
+      repo: ref.repo,
+      num: ref.number,
+    });
+    const viewerLogin = res.viewer?.login ?? "";
+    const reviews: any[] = res.repository?.pullRequest?.reviews?.nodes ?? [];
+    const mine = reviews.find((r) => r.author?.login === viewerLogin);
+    if (!mine) return null;
+    return {
+      id: mine.id,
+      databaseId: mine.databaseId,
+      body: mine.body ?? "",
+      commentIds: (mine.comments?.nodes ?? []).map((c: any) => c.databaseId),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface AutoMergeState {
+  enabled: boolean;
+  method?: "MERGE" | "SQUASH" | "REBASE";
+  enabledByLogin?: string;
+  enabledAt?: string;
+}
+
+export async function fetchAutoMerge(ref: PrRef): Promise<AutoMergeState> {
+  const query = `
+    query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$num){
+          autoMergeRequest{ mergeMethod enabledAt enabledBy{ login } }
+        }
+      }
+    }`;
+  const res = await gqlQuery<any>(query, {
+    owner: ref.owner,
+    repo: ref.repo,
+    num: ref.number,
+  });
+  const amr = res.repository?.pullRequest?.autoMergeRequest;
+  if (!amr) return { enabled: false };
+  return {
+    enabled: true,
+    method: amr.mergeMethod,
+    enabledByLogin: amr.enabledBy?.login,
+    enabledAt: amr.enabledAt,
+  };
+}
+
+export async function createPendingReview(
+  prNodeId: string,
+  body = "",
+): Promise<string> {
+  const mutation = `
+    mutation($prId:ID!,$body:String){
+      addPullRequestReview(input:{pullRequestId:$prId, body:$body}){
+        pullRequestReview{ id }
+      }
+    }`;
+  const res = await gqlQuery<any>(mutation, { prId: prNodeId, body });
+  return res.addPullRequestReview.pullRequestReview.id as string;
+}
+
+export interface NewCommentInput {
+  reviewId: string;
+  body: string;
+  path: string;
+  line: number;
+  side: DiffSide;
+}
+
+export async function addPendingThread(input: NewCommentInput): Promise<void> {
+  const mutation = `
+    mutation($rid:ID!,$body:String!,$path:String!,$line:Int!,$side:DiffSide!){
+      addPullRequestReviewThread(input:{
+        pullRequestReviewId:$rid, body:$body, path:$path,
+        line:$line, side:$side
+      }){ thread{ id } }
+    }`;
+  await gqlQuery<any>(mutation, {
+    rid: input.reviewId,
+    body: input.body,
+    path: input.path,
+    line: input.line,
+    side: input.side,
+  });
+}
+
+export async function submitPendingReview(
+  reviewId: string,
+  event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+  body: string,
+): Promise<void> {
+  const mutation = `
+    mutation($rid:ID!,$event:PullRequestReviewEvent!,$body:String){
+      submitPullRequestReview(input:{
+        pullRequestReviewId:$rid, event:$event, body:$body
+      }){ pullRequestReview{ id state } }
+    }`;
+  await gqlQuery<any>(mutation, { rid: reviewId, event, body });
+}
+
+export async function disableAutoMerge(prNodeId: string): Promise<void> {
+  const mutation = `
+    mutation($prId:ID!){
+      disablePullRequestAutoMerge(input:{pullRequestId:$prId}){
+        pullRequest{ id }
+      }
+    }`;
+  await gqlQuery<any>(mutation, { prId: prNodeId });
+}
+
+async function gqlQuery<T>(
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<T> {
+  const args = ["graphql", "-f", `query=${query}`];
+  for (const [k, v] of Object.entries(variables)) {
+    if (typeof v === "number") args.push("-F", `${k}=${v}`);
+    else args.push("-f", `${k}=${String(v)}`);
+  }
+  const json = await runGh(["api", ...args]);
+  const parsed = JSON.parse(json);
+  if (parsed.errors?.length) {
+    const msg = parsed.errors
+      .map((e: any) => e.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(`GraphQL error: ${msg}`);
+  }
+  return parsed.data as T;
 }
 
 function runGh(args: string[]): Promise<string> {

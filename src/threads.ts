@@ -10,6 +10,8 @@ export interface Thread {
   line: number | null;
   side: DiffSide;
   isOutdated: boolean;
+  // True if any comment in this thread is in the viewer's pending review.
+  hasPending: boolean;
 }
 
 export interface ThreadIndex {
@@ -17,7 +19,10 @@ export interface ThreadIndex {
   getAt(path: string, side: DiffSide, line: number): Thread[];
 }
 
-export function buildThreadIndex(comments: ReviewComment[]): ThreadIndex {
+export function buildThreadIndex(
+  comments: ReviewComment[],
+  pendingCommentIds: Set<number> = new Set(),
+): ThreadIndex {
   const byId = new Map<number, ReviewComment>();
   for (const c of comments) byId.set(c.id, c);
 
@@ -54,6 +59,7 @@ export function buildThreadIndex(comments: ReviewComment[]): ThreadIndex {
     members.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const root = byId.get(rootId) ?? members[0];
     const replies = members.filter((m) => m.id !== root.id);
+    const hasPending = members.some((m) => pendingCommentIds.has(m.id));
     threads.push({
       id: root.id,
       root,
@@ -62,6 +68,7 @@ export function buildThreadIndex(comments: ReviewComment[]): ThreadIndex {
       line: root.line ?? root.originalLine,
       side: root.side ?? root.originalSide ?? "RIGHT",
       isOutdated: root.line == null,
+      hasPending,
     });
   }
 

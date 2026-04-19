@@ -3,6 +3,7 @@ import open from "open";
 import {
   fetchAuthedUser,
   fetchFileAtRef,
+  fetchPendingReview,
   fetchPrDiff,
   fetchPrInfo,
   fetchReviewComments,
@@ -10,7 +11,6 @@ import {
 } from "./gh.js";
 import { buildGeneratedMatcher } from "./gitattributes.js";
 import { startServer } from "./server.js";
-import { buildThreadIndex } from "./threads.js";
 
 interface Args {
   prUrl: string;
@@ -105,19 +105,20 @@ async function main() {
   );
 
   // Only .gitattributes needs pr.headSha — everything else runs in parallel.
-  const [pr, authedUser, reviewComments, diff] = await Promise.all([
-    fetchPrInfo(ref),
-    fetchAuthedUser(),
-    fetchReviewComments(ref),
-    fetchPrDiff(ref),
-  ]);
+  const [pr, authedUser, reviewComments, pendingReview, diff] =
+    await Promise.all([
+      fetchPrInfo(ref),
+      fetchAuthedUser(),
+      fetchReviewComments(ref),
+      fetchPendingReview(ref),
+      fetchPrDiff(ref),
+    ]);
   const gitattributes = await fetchFileAtRef(
     ref,
     ".gitattributes",
     pr.headSha,
   );
   const generatedMatcher = buildGeneratedMatcher(gitattributes);
-  const threadIndex = buildThreadIndex(reviewComments);
 
   const server = await startServer({
     ref,
@@ -125,16 +126,19 @@ async function main() {
     diff,
     authedUser,
     generatedMatcher,
-    threadIndex,
+    initialReviewComments: reviewComments,
+    initialPendingReview: pendingReview,
     port: args.port,
   });
   process.stdout.write(`\n  ${pr.title}\n`);
   process.stdout.write(
     `  +${pr.additions} −${pr.deletions} across ${pr.changedFiles} file${pr.changedFiles === 1 ? "" : "s"}\n`,
   );
-  process.stdout.write(
-    `  ${threadIndex.all.length} review thread${threadIndex.all.length === 1 ? "" : "s"}\n`,
-  );
+  if (pendingReview) {
+    process.stdout.write(
+      `  pending review with ${pendingReview.commentIds.length} comment${pendingReview.commentIds.length === 1 ? "" : "s"}\n`,
+    );
+  }
   process.stdout.write(`\nServing at ${server.prUrl}\n`);
   process.stdout.write(`Press Ctrl+C to stop.\n`);
 

@@ -1,5 +1,11 @@
 import parseDiff from "parse-diff";
-import type { AuthedUser, PrInfo, ReviewComment } from "./gh.js";
+import type {
+  AuthedUser,
+  DiffSide,
+  PendingReview,
+  PrInfo,
+  ReviewComment,
+} from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
 import { renderMarkdown } from "./markdown.js";
 import type { Thread, ThreadIndex } from "./threads.js";
@@ -10,6 +16,7 @@ const EMPTY_INDEX: ThreadIndex = { all: [], getAt: () => [] };
 interface RenderContext {
   prUrl: string;
   threadIndex: ThreadIndex;
+  pendingCommentIds: Set<number>;
 }
 
 interface FileInfo {
@@ -37,6 +44,7 @@ export function renderPage(
   generatedMatcher: GeneratedMatcher = NOOP_MATCHER,
   authedUser: AuthedUser | null = null,
   threadIndex: ThreadIndex = EMPTY_INDEX,
+  pendingReview: PendingReview | null = null,
 ): string {
   const files = parseDiff(rawDiff);
   const fileInfos = files.map((f, i) => {
@@ -57,7 +65,13 @@ export function renderPage(
     threadsByFile.set(t.path, list);
   }
 
-  const ctx: RenderContext = { prUrl: pr.url, threadIndex };
+  const pendingCommentIds = new Set(pendingReview?.commentIds ?? []);
+  const pendingCount = pendingCommentIds.size;
+  const ctx: RenderContext = {
+    prUrl: pr.url,
+    threadIndex,
+    pendingCommentIds,
+  };
 
   const fileTree = renderFileTree(
     buildFileTree(fileInfos),
@@ -93,7 +107,12 @@ export function renderPage(
   <div class="pr-title-row">
     <span class="pr-state ${pr.state} ${pr.isDraft ? "draft" : ""}">${pr.isDraft ? "Draft" : capitalize(pr.state)}</span>
     <h1><a href="${escapeHtml(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${escapeHtml(pr.title)}</h1>
-    <div class="pr-header-right">${renderAuthChip(authedUser)}</div>
+    <div class="pr-header-right">
+      <button type="button" class="btn primary" data-action="open-submit" title="Open the submit review modal">
+        Submit review${pendingCount > 0 ? ` <span class="btn-count">${pendingCount}</span>` : ""}
+      </button>
+      ${renderAuthChip(authedUser)}
+    </div>
   </div>
   <div class="pr-meta">
     <span><strong>${escapeHtml(pr.author)}</strong> wants to merge</span>
@@ -116,8 +135,47 @@ export function renderPage(
     ${fileSections || '<div class="empty">No file changes in this PR.</div>'}
   </main>
 </div>
+${renderSubmitModal(pendingReview, pendingCount)}
+<script>${CLIENT_SCRIPT}</script>
 </body>
 </html>`;
+}
+
+function renderSubmitModal(
+  pendingReview: PendingReview | null,
+  pendingCount: number,
+): string {
+  const initialBody = pendingReview?.body ?? "";
+  return `<div class="modal" id="submit-modal" hidden>
+  <div class="modal-backdrop" data-action="close-modal"></div>
+  <div class="modal-panel" role="dialog" aria-labelledby="submit-modal-title">
+    <div class="modal-header">
+      <h2 id="submit-modal-title">Submit review</h2>
+      <button type="button" class="modal-close" data-action="close-modal" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-status">
+        <span class="modal-pending-count">${pendingCount} pending comment${pendingCount === 1 ? "" : "s"}</span>
+      </div>
+      <label class="modal-label" for="submit-review-body">Overall review</label>
+      <textarea id="submit-review-body" class="modal-textarea" rows="5" placeholder="Leave a short summary (optional)">${escapeHtml(initialBody)}</textarea>
+      <fieldset class="modal-fieldset">
+        <legend class="modal-label">Action</legend>
+        <label class="modal-radio"><input type="radio" name="submit-event" value="COMMENT" checked /> Comment <span class="modal-radio-hint">No approval signal.</span></label>
+        <label class="modal-radio"><input type="radio" name="submit-event" value="APPROVE" /> Approve <span class="modal-radio-hint">Agree to merge.</span></label>
+        <label class="modal-radio"><input type="radio" name="submit-event" value="REQUEST_CHANGES" /> Request changes <span class="modal-radio-hint">Blocks merge until resolved.</span></label>
+      </fieldset>
+      <div class="auto-merge-panel" id="auto-merge-panel">
+        <div class="auto-merge-status">Checking auto-merge…</div>
+      </div>
+      <div class="modal-error" id="submit-error" hidden></div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="btn primary" data-action="submit-review">Submit</button>
+    </div>
+  </div>
+</div>`;
 }
 
 function renderFile(
@@ -362,7 +420,17 @@ function renderChunk(
         "ln2" in ch ? ch.ln2 : "ln" in ch && ch.type === "add" ? ch.ln : null;
       const marker = ch.type === "add" ? "+" : ch.type === "del" ? "-" : " ";
       const content = ch.content.length > 0 ? ch.content.slice(1) : "";
-      const row = `<tr class="row ${cls}"><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}</td><td class="marker">${marker}</td><td class="code">${escapeHtml(content)}</td></tr>`;
+      // Side: RIGHT for add/ctx (newest file), LEFT for del. Matches GitHub.
+      const commentSide: DiffSide = ch.type === "del" ? "LEFT" : "RIGHT";
+      const commentLine = commentSide === "LEFT" ? oldNo : newNo;
+      const commentable = commentLine != null;
+      const addBtn = commentable
+        ? `<button type="button" class="add-comment-btn" data-action="add-comment" aria-label="Comment on line ${commentLine}">+</button>`
+        : "";
+      const dataAttrs = commentable
+        ? ` data-path="${escapeHtml(path)}" data-side="${commentSide}" data-line="${commentLine}"`
+        : "";
+      const row = `<tr class="row ${cls}"${dataAttrs}><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}${addBtn}</td><td class="marker">${marker}</td><td class="code">${escapeHtml(content)}</td></tr>`;
 
       const threads: Thread[] = [];
       const seen = new Set<number>();
@@ -401,9 +469,12 @@ function renderChunk(
 
 function renderThread(thread: Thread, ctx: RenderContext): string {
   const comments = [thread.root, ...thread.replies];
-  const commentsHtml = comments.map((c) => renderComment(c)).join("");
+  const commentsHtml = comments.map((c) => renderComment(c, ctx)).join("");
   const outdatedBadge = thread.isOutdated
     ? '<span class="thread-pill outdated">Outdated</span>'
+    : "";
+  const pendingBadge = thread.hasPending
+    ? '<span class="thread-pill pending">Pending</span>'
     : "";
   const locationHint =
     thread.isOutdated && thread.line != null
@@ -417,8 +488,9 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
   // `<pr-url>/files#r<id>` lands on the diff view with the thread anchored,
   // not the conversation timeline (which is what html_url from the API gives).
   const filesUrl = `${ctx.prUrl}/files#r${thread.root.id}`;
-  return `<div class="thread">
+  return `<div class="thread${thread.hasPending ? " has-pending" : ""}">
     <div class="thread-header">
+      ${pendingBadge}
       ${outdatedBadge}
       ${replyHint}
       ${locationHint}
@@ -428,17 +500,21 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
   </div>`;
 }
 
-function renderComment(c: ReviewComment): string {
+function renderComment(c: ReviewComment, ctx: RenderContext): string {
+  const isPending = ctx.pendingCommentIds.has(c.id);
   const edited =
     c.updatedAt && c.updatedAt !== c.createdAt
       ? ` <span class="comment-edited" title="edited ${escapeHtml(c.updatedAt)}">(edited)</span>`
       : "";
-  return `<article class="comment">
+  const pendingPill = isPending
+    ? ' <span class="comment-pending-pill">Pending</span>'
+    : "";
+  return `<article class="comment${isPending ? " is-pending" : ""}">
     ${avatarImg(c.userAvatarUrl, "comment-avatar")}
     <div class="comment-body">
       <div class="comment-meta">
         <a class="comment-author" href="${userProfileUrl(c.userLogin)}" target="_blank" rel="noopener">${escapeHtml(c.userLogin)}</a>
-        <span class="comment-time" title="${escapeHtml(c.createdAt)}">${formatTime(c.createdAt)}</span>
+        <span class="comment-time" title="${escapeHtml(c.createdAt)}">${formatTime(c.createdAt)}</span>${pendingPill}
         ${edited}
       </div>
       <div class="comment-md">${renderMarkdown(c.body)}</div>
@@ -623,8 +699,266 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .row.del .marker { color: var(--del-fg); }
 .row .code { padding: 0 8px; white-space: pre; overflow-wrap: normal; word-break: normal; }
 .empty { padding: 40px; text-align: center; color: var(--text-dim); }
+
+/* Add-comment affordance — shows on row hover */
+.row .ln-new { position: relative; }
+.add-comment-btn { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; padding: 0; line-height: 16px; border-radius: 3px; background: var(--accent); color: white; border: none; font-weight: 700; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity 0.08s; }
+.row:hover .add-comment-btn, .row:focus-within .add-comment-btn { opacity: 1; }
+.add-comment-btn:hover { filter: brightness(1.1); }
+
+.comment-form-row td { padding: 10px 14px 10px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+.comment-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 80px; }
+.comment-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+.comment-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.comment-form-error { color: var(--del-fg); font-size: 12px; margin-top: 6px; display: none; }
+.comment-form-error.visible { display: block; }
+
+/* Pending pills */
+.thread-pill.pending { background: rgba(210, 153, 34, 0.15); color: #d29922; border-color: rgba(210, 153, 34, 0.4); }
+.thread.has-pending { border-color: #d29922; }
+.comment.is-pending { background: rgba(210, 153, 34, 0.06); }
+.comment-pending-pill { background: rgba(210, 153, 34, 0.15); color: #d29922; border: 1px solid rgba(210, 153, 34, 0.4); padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Buttons */
+.btn { background: var(--bg-hover); color: var(--text); border: 1px solid var(--border); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: #238636; color: white; border-color: transparent; font-weight: 600; }
+.btn.primary:hover { background: #2ea043; }
+.btn.danger { background: #da3633; color: white; border-color: transparent; }
+.btn.danger:hover { background: #f85149; }
+.btn-count { background: rgba(255, 255, 255, 0.2); padding: 1px 6px; border-radius: 999px; margin-left: 4px; font-size: 11px; }
+
+/* Submit-review modal */
+.modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal[hidden] { display: none; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); }
+.modal-panel { position: relative; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; width: 560px; max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); display: flex; flex-direction: column; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4); }
+.modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.modal-close { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 20px; line-height: 1; padding: 0; }
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 16px 18px; overflow-y: auto; }
+.modal-status { margin-bottom: 10px; font-size: 12px; color: var(--text-dim); }
+.modal-pending-count { background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px; }
+.modal-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.modal-textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: inherit; font-size: 13px; resize: vertical; }
+.modal-textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+.modal-fieldset { border: none; padding: 0; margin: 16px 0 0; }
+.modal-radio { display: flex; align-items: baseline; gap: 8px; padding: 6px 0; font-size: 13px; cursor: pointer; }
+.modal-radio input { margin: 0; }
+.modal-radio-hint { color: var(--text-dim); font-size: 12px; }
+.auto-merge-panel { margin-top: 16px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+.auto-merge-status { display: flex; align-items: center; gap: 10px; color: var(--text-dim); }
+.auto-merge-enabled { color: #d29922; }
+.auto-merge-disabled { color: var(--add-fg); }
+.modal-error { margin-top: 10px; color: var(--del-fg); font-size: 12px; }
+.modal-footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); }
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { display: none; }
 }
+`;
+
+const CLIENT_SCRIPT = `
+(function(){
+  const $ = (s, r) => (r||document).querySelector(s);
+
+  function postJson(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(async (r) => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+      return data;
+    });
+  }
+
+  // --- Add-comment form ---
+  function openCommentForm(row) {
+    // Avoid stacking multiple forms for the same row.
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains("comment-form-row")) {
+      next.querySelector("textarea").focus();
+      return;
+    }
+    const tr = document.createElement("tr");
+    tr.className = "comment-form-row";
+    tr.innerHTML =
+      '<td colspan="4"><form class="comment-form">' +
+        '<textarea placeholder="Leave a comment" required></textarea>' +
+        '<div class="comment-form-error"></div>' +
+        '<div class="comment-form-actions">' +
+          '<button type="button" class="btn" data-action="cancel-comment">Cancel</button>' +
+          '<button type="submit" class="btn primary">Add comment</button>' +
+        '</div>' +
+      '</form></td>';
+    row.parentNode.insertBefore(tr, row.nextSibling);
+    const form = tr.querySelector("form");
+    const ta = tr.querySelector("textarea");
+    ta.focus();
+
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = ta.value.trim();
+      const errEl = tr.querySelector(".comment-form-error");
+      errEl.classList.remove("visible");
+      if (!body) return;
+      const submitBtn = form.querySelector(".btn.primary");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Sending…";
+      try {
+        await postJson("/api/comment", {
+          path: row.dataset.path,
+          line: Number(row.dataset.line),
+          side: row.dataset.side,
+          body,
+        });
+        // Reload so the new thread shows up inline.
+        // Preserve scroll position via sessionStorage.
+        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+        location.reload();
+      } catch (err) {
+        errEl.textContent = String((err && err.message) || err);
+        errEl.classList.add("visible");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Add comment";
+      }
+    });
+
+    tr.addEventListener("click", (ev) => {
+      const t = ev.target;
+      if (t && t.dataset && t.dataset.action === "cancel-comment") {
+        tr.remove();
+      }
+    });
+  }
+
+  document.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!t || !(t instanceof Element)) return;
+    const act = t.getAttribute("data-action");
+    if (act === "add-comment") {
+      const row = t.closest("tr.row");
+      if (row) openCommentForm(row);
+    } else if (act === "open-submit") {
+      openSubmitModal();
+    } else if (act === "close-modal") {
+      closeSubmitModal();
+    } else if (act === "submit-review") {
+      submitReview();
+    } else if (act === "disable-auto-merge") {
+      disableAutoMerge();
+    }
+  });
+
+  // Restore scroll after page reload.
+  const saved = sessionStorage.getItem("ghreview:scrollY");
+  if (saved) {
+    sessionStorage.removeItem("ghreview:scrollY");
+    window.scrollTo(0, Number(saved));
+  }
+
+  // --- Submit modal + auto-merge ---
+  const modal = $("#submit-modal");
+  const amPanel = $("#auto-merge-panel");
+  const errEl = $("#submit-error");
+
+  function openSubmitModal() {
+    errEl.hidden = true;
+    modal.hidden = false;
+    const ta = $("#submit-review-body");
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    renderAutoMerge({ loading: true });
+    fetchAutoMerge();
+  }
+
+  function closeSubmitModal() {
+    modal.hidden = true;
+  }
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !modal.hidden) closeSubmitModal();
+  });
+
+  function renderAutoMerge(state) {
+    if (state.loading) {
+      amPanel.innerHTML =
+        '<div class="auto-merge-status">Checking auto-merge…</div>';
+      return;
+    }
+    if (state.error) {
+      amPanel.innerHTML =
+        '<div class="auto-merge-status">Could not fetch auto-merge: ' +
+        escape(state.error) +
+        "</div>";
+      return;
+    }
+    if (!state.enabled) {
+      amPanel.innerHTML =
+        '<div class="auto-merge-status auto-merge-disabled">Auto-merge is OFF on this PR.</div>';
+      return;
+    }
+    const who = state.enabledByLogin ? " by @" + escape(state.enabledByLogin) : "";
+    amPanel.innerHTML =
+      '<div class="auto-merge-status auto-merge-enabled">' +
+        '⚠ Auto-merge is ON (' + (state.method || "?").toLowerCase() + ')' + who +
+      "</div>" +
+      '<div style="margin-top:8px;"><button type="button" class="btn danger" data-action="disable-auto-merge">Disable auto-merge</button></div>';
+  }
+
+  function fetchAutoMerge() {
+    fetch("/api/auto-merge")
+      .then((r) => r.json())
+      .then((data) => renderAutoMerge(data))
+      .catch((err) =>
+        renderAutoMerge({ error: (err && err.message) || String(err) }),
+      );
+  }
+
+  function disableAutoMerge() {
+    const btn = amPanel.querySelector(".btn.danger");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Disabling…";
+    }
+    postJson("/api/disable-auto-merge", {})
+      .then((state) => renderAutoMerge(state))
+      .catch((err) =>
+        renderAutoMerge({ error: (err && err.message) || String(err) }),
+      );
+  }
+
+  function submitReview() {
+    const body = $("#submit-review-body").value;
+    const event = document.querySelector('input[name="submit-event"]:checked').value;
+    errEl.hidden = true;
+    const btn = modal.querySelector('[data-action="submit-review"]');
+    btn.disabled = true;
+    btn.textContent = "Submitting…";
+    postJson("/api/submit", { event, body })
+      .then(() => {
+        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+        location.reload();
+      })
+      .catch((err) => {
+        errEl.textContent = String((err && err.message) || err);
+        errEl.hidden = false;
+        btn.disabled = false;
+        btn.textContent = "Submit";
+      });
+  }
+
+  function escape(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+})();
 `;
