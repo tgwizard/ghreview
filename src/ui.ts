@@ -51,6 +51,7 @@ export function renderPage(
         generatedFlags[i],
         threadIndex,
         threadsByFile.get(matchablePath(f)) ?? [],
+        pr.url,
       ),
     )
     .join("");
@@ -105,6 +106,7 @@ function renderFile(
   isGenerated: boolean,
   threadIndex: ThreadIndex,
   threadsForFile: Thread[],
+  prUrl: string,
 ): string {
   const path = displayPath(file);
   const mPath = matchablePath(file);
@@ -112,7 +114,7 @@ function renderFile(
 
   const placedIds = new Set<number>();
   const chunks = file.chunks
-    .map((c) => renderChunk(c, mPath, threadIndex, placedIds))
+    .map((c) => renderChunk(c, mPath, threadIndex, placedIds, prUrl))
     .join("");
 
   const unplaced = threadsForFile.filter((t) => !placedIds.has(t.id));
@@ -120,7 +122,7 @@ function renderFile(
     unplaced.length > 0
       ? `<div class="outdated-threads">
         <div class="outdated-threads__header">${unplaced.length} outdated thread${unplaced.length === 1 ? "" : "s"} on this file</div>
-        ${unplaced.map((t) => renderThread(t)).join("")}
+        ${unplaced.map((t) => renderThread(t, prUrl)).join("")}
       </div>`
       : "";
 
@@ -192,6 +194,7 @@ function renderChunk(
   path: string,
   threadIndex: ThreadIndex,
   placedIds: Set<number>,
+  prUrl: string,
 ): string {
   const rows = chunk.changes
     .map((ch) => {
@@ -225,7 +228,7 @@ function renderChunk(
       const threadRows = threads
         .map(
           (t) =>
-            `<tr class="thread-row"><td colspan="4">${renderThread(t)}</td></tr>`,
+            `<tr class="thread-row"><td colspan="4">${renderThread(t, prUrl)}</td></tr>`,
         )
         .join("");
 
@@ -240,7 +243,7 @@ function renderChunk(
 </tbody></table>`;
 }
 
-function renderThread(thread: Thread): string {
+function renderThread(thread: Thread, prUrl: string): string {
   const comments = [thread.root, ...thread.replies];
   const commentsHtml = comments.map((c) => renderComment(c)).join("");
   const outdatedBadge = thread.isOutdated
@@ -255,12 +258,16 @@ function renderThread(thread: Thread): string {
     replyCount > 0
       ? `<span class="thread-pill">${replyCount} repl${replyCount === 1 ? "y" : "ies"}</span>`
       : "";
+  // GitHub's Files Changed page anchors threads as `<pr-url>/files#r<id>`.
+  // This is the right landing spot so clicking "open on GitHub" keeps you
+  // in the same diff context rather than the conversation timeline.
+  const filesUrl = `${prUrl}/files#r${thread.root.id}`;
   return `<div class="thread">
     <div class="thread-header">
       ${outdatedBadge}
       ${replyHint}
       ${locationHint}
-      <a class="thread-link" href="${escapeHtml(thread.root.htmlUrl)}" target="_blank" rel="noopener" title="Open on GitHub">↗</a>
+      <a class="thread-link" href="${escapeHtml(filesUrl)}" target="_blank" rel="noopener" title="Open on GitHub Files Changed">↗</a>
     </div>
     ${commentsHtml}
   </div>`;
