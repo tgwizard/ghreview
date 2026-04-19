@@ -6,9 +6,8 @@ name: Publish to npm
 # configured with a trusted publisher pointing at this repo/workflow (set
 # at npmjs.com → Package settings → Publishing access → Trusted publishers).
 #
-# For maximum supply-chain hardening, replace the version tags below with
-# full commit SHAs (see https://docs.github.com/en/actions/security-for-github-actions
-# — an action repo can retag, a commit SHA cannot be moved).
+# Third-party actions are pinned to commit SHAs with the tag as a comment.
+# Refresh with `git ls-remote --tags https://github.com/actions/<name>`.
 
 on:
   release:
@@ -24,14 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Node
         # Node 24 ships with npm 11+; OIDC-based registry auth for
         # Trusted Publishers needs ≥ 11.5.1. Node 22 (npm 10.x) would
         # sign provenance correctly but 404 on the PUT because it
         # falls back to an empty NODE_AUTH_TOKEN.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
