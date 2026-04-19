@@ -99,18 +99,28 @@ export function renderPage(
       ? `<div class="gen-banner">${pluralize(generatedCount, "generated file")} hidden by default (based on <code>.gitattributes</code>). Click a file header to expand.</div>`
       : "";
 
+  // pr.url is `https://github.com/<owner>/<repo>/pull/<n>` — derive the
+  // repo slug + repo homepage URL so both the browser tab title and the
+  // page heading can surface them.
+  const repoMatch = pr.url.match(/^(https?:\/\/[^/]+\/([^/]+\/[^/]+))\/pull\//);
+  const repoUrl = repoMatch?.[1] ?? "";
+  const repoSlug = repoMatch?.[2] ?? "";
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>${escapeHtml(`#${pr.number} ${pr.title}`)} · ghreview</title>
+<title>${escapeHtml(`${repoSlug}#${pr.number} ${pr.title}`)} · ghreview</title>
 <style>${STYLES}</style>
 </head>
 <body>
 <header class="pr-header">
   <div class="pr-title-row">
     <span class="pr-state ${pr.state} ${pr.isDraft ? "draft" : ""}">${pr.isDraft ? "Draft" : capitalize(pr.state)}</span>
-    <h1><a href="${escapeHtml(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${escapeHtml(pr.title)}</h1>
+    <h1>
+      ${repoSlug ? `<a class="pr-repo" href="${escapeHtml(repoUrl)}" target="_blank" rel="noopener">${escapeHtml(repoSlug)}</a>` : ""}
+      <a class="pr-number" href="${escapeHtml(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a>
+      <span class="pr-title-text">${escapeHtml(pr.title)}</span>
+    </h1>
     <div class="pr-header-right">
       <button type="button" class="btn refresh-btn" data-action="refresh" title="Re-fetch the PR state from GitHub" data-initial-head-sha="${escapeHtml(pr.headSha)}" data-initial-updated-at="${escapeHtml(pr.updatedAt)}">
         <span class="refresh-icon" aria-hidden="true">⟳</span>
@@ -780,7 +790,11 @@ a:hover { text-decoration: underline; }
 code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--bg-elev); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 .pr-header { padding: 14px 20px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 0; z-index: 10; }
 .pr-title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.pr-title-row h1 { margin: 0; font-size: 18px; font-weight: 500; flex: 1 1 320px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-title-row h1 { margin: 0; font-size: 18px; font-weight: 500; flex: 1 1 320px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 6px; }
+.pr-repo { color: var(--text-dim); font-weight: 400; font-size: 14px; }
+.pr-repo:hover { color: var(--accent); }
+.pr-number { color: var(--text-dim); font-weight: 400; }
+.pr-title-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .pr-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
 @media (max-width: 1100px) {
   .auth-chip__meta { display: none; }
@@ -793,7 +807,7 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .auth-chip__meta { display: flex; flex-direction: column; line-height: 1.1; }
 .auth-chip__label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
 .auth-chip__login { font-weight: 600; }
-.pr-title-row h1 a { color: var(--text-dim); margin-right: 8px; font-weight: 400; }
+.pr-title-row h1 a { color: var(--text-dim); font-weight: 400; }
 .pr-state { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #238636; color: white; }
 .pr-state.closed { background: #8957e5; }
 .pr-state.draft { background: #6e7681; }
