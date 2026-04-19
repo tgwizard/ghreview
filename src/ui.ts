@@ -136,15 +136,77 @@ export function renderPage(
     ${fileSections || '<div class="empty">No file changes in this PR.</div>'}
   </main>
 </div>
-${renderSubmitModal(pendingReview, pendingCount)}
+${renderSubmitModal(pendingReview, pendingCount, collectPendingComments(threadIndex, pendingCommentIds))}
 <script>${CLIENT_SCRIPT}</script>
 </body>
 </html>`;
 }
 
+interface PendingCommentPlacement {
+  comment: ReviewComment;
+  path: string;
+  line: number | null;
+  isOutdated: boolean;
+}
+
+function collectPendingComments(
+  threadIndex: ThreadIndex,
+  pendingCommentIds: Set<number>,
+): PendingCommentPlacement[] {
+  const out: PendingCommentPlacement[] = [];
+  for (const t of threadIndex.all) {
+    const emit = (c: ReviewComment) => {
+      if (!pendingCommentIds.has(c.id)) return;
+      out.push({
+        comment: c,
+        path: t.path,
+        line: t.line,
+        isOutdated: t.isOutdated,
+      });
+    };
+    emit(t.root);
+    for (const r of t.replies) emit(r);
+  }
+  out.sort((a, b) => {
+    const byPath = a.path.localeCompare(b.path);
+    if (byPath !== 0) return byPath;
+    return (a.line ?? 0) - (b.line ?? 0);
+  });
+  return out;
+}
+
+function renderPendingCommentList(items: PendingCommentPlacement[]): string {
+  if (items.length === 0) {
+    return `<div class="modal-pending-empty">No pending comments yet. Hover a diff line and click the + to leave one.</div>`;
+  }
+  return `<ul class="modal-pending-list">${items
+    .map((it) => {
+      const loc = it.line != null ? `line ${it.line}` : "outdated";
+      const outdatedTag = it.isOutdated
+        ? ' <span class="thread-pill outdated">Outdated</span>'
+        : "";
+      const snippet = truncate(it.comment.body || "", 160);
+      return `<li class="modal-pending-item">
+        <div class="modal-pending-item-header">
+          <code class="modal-pending-path" title="${escapeHtml(it.path)}">${escapeHtml(it.path)}</code>
+          <span class="modal-pending-loc">${loc}</span>${outdatedTag}
+          <button type="button" class="comment-link-btn" data-action="go-to-comment" data-comment-id="${it.comment.id}">Go to →</button>
+        </div>
+        <div class="modal-pending-body">${escapeHtml(snippet)}</div>
+      </li>`;
+    })
+    .join("")}</ul>`;
+}
+
+function truncate(s: string, max: number): string {
+  const cleaned = s.replace(/\s+/g, " ").trim();
+  return cleaned.length > max ? cleaned.slice(0, max - 1) + "…" : cleaned;
+}
+
 function renderSubmitModal(
   pendingReview: PendingReview | null,
   pendingCount: number,
+  pendingItems: PendingCommentPlacement[],
 ): string {
   const initialBody = pendingReview?.body ?? "";
   return `<div class="modal" id="submit-modal" hidden>
@@ -158,6 +220,7 @@ function renderSubmitModal(
       <div class="modal-status">
         <span class="modal-pending-count">${pendingCount} pending comment${pendingCount === 1 ? "" : "s"}</span>
       </div>
+      ${renderPendingCommentList(pendingItems)}
       <label class="modal-label" for="submit-review-body">Overall review</label>
       <textarea id="submit-review-body" class="modal-textarea" rows="5" placeholder="Leave a short summary (optional)">${escapeHtml(initialBody)}</textarea>
       <fieldset class="modal-fieldset">
@@ -519,7 +582,7 @@ function renderComment(c: ReviewComment, ctx: RenderContext): string {
          <button type="button" class="comment-link-btn danger" data-action="delete-comment">Delete</button>
        </div>`
     : "";
-  return `<article class="comment${isPending ? " is-pending" : ""}" data-comment-id="${c.id}" data-raw-body="${escapeHtml(c.body)}">
+  return `<article class="comment${isPending ? " is-pending" : ""}" id="comment-${c.id}" data-comment-id="${c.id}" data-raw-body="${escapeHtml(c.body)}">
     ${avatarImg(c.userAvatarUrl, "comment-avatar")}
     <div class="comment-body">
       <div class="comment-meta">
@@ -773,6 +836,16 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .modal-body { padding: 16px 18px; overflow-y: auto; }
 .modal-status { margin-bottom: 10px; font-size: 12px; color: var(--text-dim); }
 .modal-pending-count { background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px; }
+.modal-pending-list { list-style: none; margin: 0 0 16px; padding: 0; max-height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.modal-pending-item { padding: 8px 10px; border-top: 1px solid var(--border); }
+.modal-pending-item:first-child { border-top: none; }
+.modal-pending-item-header { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.modal-pending-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; background: var(--bg-elev); padding: 1px 6px; border-radius: 3px; }
+.modal-pending-loc { flex-shrink: 0; font-family: ui-monospace, Menlo, monospace; }
+.modal-pending-body { font-size: 12px; color: var(--text); line-height: 1.4; white-space: pre-wrap; }
+.modal-pending-empty { color: var(--text-dim); font-size: 12px; text-align: center; padding: 12px 0 16px; }
+@keyframes flash-highlight { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
+.comment.flash-highlight { animation: flash-highlight 1.6s ease-out; }
 .modal-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
 .modal-textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: inherit; font-size: 13px; resize: vertical; }
 .modal-textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
@@ -900,8 +973,28 @@ const CLIENT_SCRIPT = `
     } else if (act === "reply-thread") {
       const thread = t.closest(".thread");
       if (thread) openReplyForm(thread);
+    } else if (act === "go-to-comment") {
+      const id = t.getAttribute("data-comment-id");
+      if (id) goToComment(id);
     }
   });
+
+  function goToComment(id) {
+    closeSubmitModal();
+    const el = document.getElementById("comment-" + id);
+    if (!el) return;
+    // Open any collapsed <details> ancestors (generated files).
+    let parent = el.parentElement;
+    while (parent) {
+      if (parent.tagName === "DETAILS" && !parent.open) parent.open = true;
+      parent = parent.parentElement;
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("flash-highlight");
+    // Force reflow so the animation restarts if triggered again.
+    void el.offsetWidth;
+    el.classList.add("flash-highlight");
+  }
 
   function openReplyForm(thread) {
     const footer = thread.querySelector(".thread-reply-footer");
