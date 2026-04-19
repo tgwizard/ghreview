@@ -30,7 +30,7 @@ jobs:
         # Trusted Publishers needs ≥ 11.5.1. Node 22 (npm 10.x) would
         # sign provenance correctly but 404 on the PUT because it
         # falls back to an empty NODE_AUTH_TOKEN.
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
