@@ -1,9 +1,11 @@
 import parseDiff from "parse-diff";
 import type {
   AuthedUser,
+  ChecksRollup,
   DiffSide,
   IssueComment,
   PendingReview,
+  PrCommit,
   PrInfo,
   ReviewComment,
 } from "./gh.js";
@@ -50,6 +52,8 @@ export function renderPage(
   pendingReview: PendingReview | null = null,
   pendingCommentIds: Set<number> = new Set(),
   issueComments: IssueComment[] = [],
+  checks: ChecksRollup | null = null,
+  commits: PrCommit[] = [],
 ): string {
   const files = parseDiff(rawDiff);
   const fileInfos = files.map((f, i) => {
@@ -135,11 +139,15 @@ export function renderPage(
     <span>${pr.changedFiles} files</span>
     <span class="add">+${pr.additions}</span>
     <span class="del">−${pr.deletions}</span>
+    ${renderChecksPill(checks, repoUrl, pr.number)}
   </div>
 </header>
 <nav class="tabs" role="tablist">
   <button type="button" class="tab" role="tab" data-tab="conversation">
     Conversation${issueComments.length > 0 ? ` <span class="tab-count">${issueComments.length}</span>` : ""}
+  </button>
+  <button type="button" class="tab" role="tab" data-tab="commits">
+    Commits <span class="tab-count">${commits.length}</span>
   </button>
   <button type="button" class="tab active" role="tab" data-tab="files">
     Files <span class="tab-count">${files.length}</span>
@@ -147,6 +155,9 @@ export function renderPage(
 </nav>
 <section class="tab-panel" data-panel="conversation" hidden>
   ${renderConversationPanel(pr, issueComments)}
+</section>
+<section class="tab-panel" data-panel="commits" hidden>
+  ${renderCommitsPanel(commits)}
 </section>
 <section class="tab-panel" data-panel="files">
   <div class="layout">
@@ -352,6 +363,60 @@ function renderFile(
   ${header}
   ${body}
 </section>`;
+}
+
+function renderChecksPill(
+  checks: ChecksRollup | null,
+  repoUrl: string,
+  prNumber: number,
+): string {
+  if (!checks || checks.totalCount === 0) return "";
+  const href = repoUrl ? `${repoUrl}/pull/${prNumber}/checks` : "";
+  const variant =
+    checks.failing > 0
+      ? "failing"
+      : checks.pending > 0
+        ? "pending"
+        : "passing";
+  const icon = variant === "failing" ? "✕" : variant === "pending" ? "●" : "✓";
+  let label: string;
+  if (variant === "failing") {
+    label = `${checks.failing} failing`;
+  } else if (variant === "pending") {
+    label = `${checks.pending} pending`;
+  } else {
+    label = `${checks.passing} passed`;
+  }
+  const inner = `<span class="checks-icon">${icon}</span><span>${label}</span>`;
+  if (href) {
+    return `<a class="checks-pill checks-${variant}" href="${escapeHtml(href)}" target="_blank" rel="noopener" title="Open checks on GitHub">${inner}</a>`;
+  }
+  return `<span class="checks-pill checks-${variant}">${inner}</span>`;
+}
+
+function renderCommitsPanel(commits: PrCommit[]): string {
+  if (commits.length === 0) {
+    return `<div class="conversation"><p class="conversation-empty">No commits yet.</p></div>`;
+  }
+  const items = commits
+    .map((c) => {
+      const headline = c.message.split("\n")[0];
+      return `<li class="commit-item">
+        ${avatarImg(c.authorAvatarUrl, "comment-avatar")}
+        <div class="commit-body">
+          <div class="commit-headline">${escapeHtml(headline)}</div>
+          <div class="commit-meta">
+            ${c.authorLogin ? `<a class="comment-author" href="${userProfileUrl(c.authorLogin)}" target="_blank" rel="noopener">${escapeHtml(c.authorLogin)}</a>` : ""}
+            <a class="commit-sha" href="${escapeHtml(c.htmlUrl)}" target="_blank" rel="noopener" title="${escapeHtml(c.sha)}">${escapeHtml(c.abbreviatedSha)}</a>
+            <span class="comment-time" title="${escapeHtml(c.authoredAt)}">${formatTime(c.authoredAt)}</span>
+          </div>
+        </div>
+      </li>`;
+    })
+    .join("");
+  return `<div class="conversation">
+    <ul class="commits-list">${items}</ul>
+  </div>`;
 }
 
 function renderConversationPanel(
@@ -667,6 +732,9 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
   const pendingBadge = thread.hasPending
     ? '<span class="thread-pill pending">Pending</span>'
     : "";
+  const resolvedBadge = thread.isResolved
+    ? '<span class="thread-pill resolved">Resolved</span>'
+    : "";
   const locationHint =
     thread.isOutdated && thread.line != null
       ? `<span class="thread-loc">was ${thread.side === "LEFT" ? "old" : "new"} line ${thread.line}</span>`
@@ -679,18 +747,41 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
   // `<pr-url>/files#r<id>` lands on the diff view with the thread anchored,
   // not the conversation timeline (which is what html_url from the API gives).
   const filesUrl = `${ctx.prUrl}/files#r${thread.id}`;
-  return `<div class="thread${thread.hasPending ? " has-pending" : ""}" data-thread-root-id="${thread.id}">
-    <div class="thread-header">
+  const resolveBtn = thread.nodeId
+    ? `<button type="button" class="comment-link-btn" data-action="${thread.isResolved ? "unresolve-thread" : "resolve-thread"}" data-thread-node-id="${escapeHtml(thread.nodeId)}">${thread.isResolved ? "Reopen" : "Resolve"}</button>`
+    : "";
+  const classes = [
+    "thread",
+    thread.hasPending ? "has-pending" : "",
+    thread.isResolved ? "resolved" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const header = `<div class="thread-header">
+      ${resolvedBadge}
       ${pendingBadge}
       ${outdatedBadge}
       ${replyHint}
       ${locationHint}
       <a class="thread-link" href="${escapeHtml(filesUrl)}" target="_blank" rel="noopener" title="Open on GitHub Files Changed">↗</a>
-    </div>
-    ${commentsHtml}
-    <div class="thread-reply-footer">
+    </div>`;
+  const footer = `<div class="thread-reply-footer">
       <button type="button" class="comment-link-btn" data-action="reply-thread">Reply</button>
-    </div>
+      ${resolveBtn}
+    </div>`;
+  if (thread.isResolved) {
+    // Collapsed by default; summary mirrors the thread-header so pills and
+    // the GitHub link are still visible when collapsed.
+    return `<details class="${classes}" data-thread-root-id="${thread.id}">
+      <summary>${header}</summary>
+      ${commentsHtml}
+      ${footer}
+    </details>`;
+  }
+  return `<div class="${classes}" data-thread-root-id="${thread.id}">
+    ${header}
+    ${commentsHtml}
+    ${footer}
   </div>`;
 }
 
@@ -828,6 +919,24 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .conv-item .thread-link { margin-left: auto; }
 .conversation-empty { color: var(--text-dim); font-style: italic; text-align: center; }
 
+/* Commits tab */
+.commits-list { list-style: none; margin: 0; padding: 0; }
+.commit-item { display: grid; grid-template-columns: 32px 1fr; gap: 12px; padding: 10px 12px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; }
+.commit-item .comment-avatar { width: 28px; height: 28px; }
+.commit-body { min-width: 0; }
+.commit-headline { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; }
+.commit-meta { display: flex; gap: 10px; font-size: 11px; color: var(--text-dim); align-items: center; }
+.commit-sha { font-family: ui-monospace, Menlo, monospace; color: var(--accent); text-decoration: none; }
+.commit-sha:hover { text-decoration: underline; }
+
+/* Checks pill in the pr-meta row */
+.checks-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; font-size: 12px; text-decoration: none; border: 1px solid var(--border); margin-left: 8px; }
+.checks-pill:hover { text-decoration: none; filter: brightness(1.1); }
+.checks-icon { font-size: 11px; }
+.checks-passing { background: rgba(46, 160, 67, 0.15); color: var(--add-fg); border-color: rgba(46, 160, 67, 0.4); }
+.checks-failing { background: rgba(248, 81, 73, 0.15); color: var(--del-fg); border-color: rgba(248, 81, 73, 0.4); }
+.checks-pending { background: rgba(210, 153, 34, 0.15); color: #d29922; border-color: rgba(210, 153, 34, 0.4); }
+
 .layout { display: grid; grid-template-columns: var(--sidebar-width, 300px) 1fr; min-height: calc(100vh - 80px); }
 .sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); overflow-y: auto; position: sticky; top: 118px; height: calc(100vh - 118px); }
 .sidebar-resize-handle { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 20; }
@@ -885,6 +994,17 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .thread-header { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg-hover); border-radius: 6px 6px 0 0; font-size: 12px; }
 .thread-pill { background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); padding: 1px 8px; border-radius: 999px; font-size: 11px; }
 .thread-pill.outdated { background: rgba(210, 153, 34, 0.15); color: #d29922; border-color: rgba(210, 153, 34, 0.4); }
+.thread-pill.resolved { background: rgba(139, 148, 158, 0.15); color: var(--add-fg); border-color: rgba(63, 185, 80, 0.4); }
+
+/* Resolved threads collapse to the summary bar. The summary carries
+   thread-header styling so the chevron from <details> lives alongside
+   the pills. */
+details.thread > summary { list-style: none; cursor: pointer; }
+details.thread > summary::-webkit-details-marker { display: none; }
+details.thread.resolved { opacity: 0.85; }
+details.thread.resolved > summary { background: rgba(63, 185, 80, 0.08); border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
+details.thread.resolved:not([open]) > summary { border-bottom: none; border-radius: 6px; }
+details.thread.resolved > .comment, details.thread.resolved > .thread-reply-footer { background: rgba(63, 185, 80, 0.04); }
 .thread-loc { color: var(--text-dim); font-size: 11px; }
 .thread-link { margin-left: auto; color: var(--text-dim); text-decoration: none; font-size: 14px; }
 .thread-link:hover { color: var(--accent); }
@@ -1166,8 +1286,29 @@ const CLIENT_SCRIPT = `
     } else if (act === "expand-context") {
       const row = t.closest("tr.expand-row");
       if (row) expandContext(row);
+    } else if (act === "resolve-thread" || act === "unresolve-thread") {
+      const nodeId = t.getAttribute("data-thread-node-id");
+      if (nodeId) toggleThreadResolved(t, nodeId, act === "resolve-thread");
     }
   });
+
+  async function toggleThreadResolved(btn, nodeId, resolve) {
+    btn.disabled = true;
+    const prev = btn.textContent;
+    btn.textContent = resolve ? "Resolving…" : "Reopening…";
+    try {
+      await postJson(
+        "/api/thread/" + encodeURIComponent(nodeId) + "/" + (resolve ? "resolve" : "unresolve"),
+        {},
+      );
+      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+      location.reload();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = prev;
+      alert("Failed: " + String((err && err.message) || err));
+    }
+  }
 
   async function expandContext(row) {
     if (row.classList.contains("loading")) return;
@@ -1464,9 +1605,9 @@ const CLIENT_SCRIPT = `
   }
 
   // --- Tabs ---
+  const TABS = ["conversation", "commits", "files"];
   function activateTab(name) {
-    const valid = name === "conversation" || name === "files";
-    const tab = valid ? name : "files";
+    const tab = TABS.indexOf(name) >= 0 ? name : "files";
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === tab);
     });
@@ -1477,15 +1618,15 @@ const CLIENT_SCRIPT = `
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       const name = btn.dataset.tab;
-      // Clear file-anchor hashes when switching; only keep tab hash for
-      // Conversation (so URL is shareable).
-      const nextHash = name === "conversation" ? "#conversation" : "";
+      // Files is the default; only non-default tabs carry a hash so the
+      // URL is shareable without churning the Files path.
+      const nextHash = name === "files" ? "" : "#" + name;
       history.replaceState(null, "", location.pathname + location.search + nextHash);
       activateTab(name);
     });
   });
-  // Always land on Files by default, but honor #conversation if shared.
-  activateTab(location.hash === "#conversation" ? "conversation" : "files");
+  const initial = location.hash.replace(/^#/, "");
+  activateTab(TABS.indexOf(initial) >= 0 ? initial : "files");
 
   // --- Sidebar resize ---
   (function initSidebarResize(){

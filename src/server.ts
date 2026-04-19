@@ -7,17 +7,23 @@ import {
   disableAutoMerge,
   editReviewComment,
   fetchAutoMerge,
+  fetchChecksRollup,
   fetchFileAtRef,
   fetchIssueComments,
+  fetchPrCommits,
   fetchPrDiff,
   fetchPrInfo,
   loadReviewState,
   replyToReviewComment,
+  resolveReviewThread,
   submitPendingReview,
+  unresolveReviewThread,
   type AuthedUser,
   type AutoMergeState,
+  type ChecksRollup,
   type DiffSide,
   type IssueComment,
+  type PrCommit,
   type PrInfo,
   type PrRef,
   type ReviewState,
@@ -35,6 +41,8 @@ export interface ServerOptions {
   generatedMatcher: GeneratedMatcher;
   initialReviewState: ReviewState;
   initialIssueComments: IssueComment[];
+  initialChecks: ChecksRollup | null;
+  initialCommits: PrCommit[];
   port?: number;
 }
 
@@ -55,6 +63,8 @@ export async function startServer(
   let generatedMatcher = opts.generatedMatcher;
   let review = opts.initialReviewState;
   let issueComments = opts.initialIssueComments;
+  let checks = opts.initialChecks;
+  let commits = opts.initialCommits;
   let cachedHtml: string | null = null;
 
   const renderHtml = () => {
@@ -62,6 +72,7 @@ export async function startServer(
     const threadIndex = buildThreadIndex(
       review.comments,
       review.pendingCommentIds,
+      review.threadMetaByCommentId,
     );
     cachedHtml = renderPage(
       pr,
@@ -72,17 +83,23 @@ export async function startServer(
       review.pendingReview,
       review.pendingCommentIds,
       issueComments,
+      checks,
+      commits,
     );
     return cachedHtml;
   };
 
   const refreshReview = async () => {
-    const [next, issues] = await Promise.all([
+    const [next, issues, checksRollup, newCommits] = await Promise.all([
       loadReviewState(opts.ref),
       fetchIssueComments(opts.ref),
+      fetchChecksRollup(opts.ref),
+      fetchPrCommits(opts.ref),
     ]);
     review = next;
     issueComments = issues;
+    checks = checksRollup;
+    commits = newCommits;
     cachedHtml = null;
   };
 
@@ -282,6 +299,16 @@ export async function startServer(
             updatedAt: pr.updatedAt,
           });
         }
+      }
+
+      if (req.method === "POST" && path.startsWith("/api/thread/")) {
+        const m = path.match(/^\/api\/thread\/([^/]+)\/(resolve|unresolve)$/);
+        if (!m) return json(res, 400, { error: "invalid thread route" });
+        const nodeId = decodeURIComponent(m[1]);
+        if (m[2] === "resolve") await resolveReviewThread(nodeId);
+        else await unresolveReviewThread(nodeId);
+        await refreshReview();
+        return json(res, 200, { ok: true });
       }
 
       if (

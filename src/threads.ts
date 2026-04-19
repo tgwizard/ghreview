@@ -1,7 +1,11 @@
-import type { DiffSide, ReviewComment } from "./gh.js";
+import type { DiffSide, ReviewComment, ThreadMetadata } from "./gh.js";
 
 export interface Thread {
   id: number;
+  // GraphQL node id of the review thread — needed to call the
+  // resolve/unresolve mutations. May be null for brand-new pending threads
+  // that haven't shown up in the GraphQL index yet.
+  nodeId: string | null;
   root: ReviewComment;
   replies: ReviewComment[];
   path: string;
@@ -10,6 +14,7 @@ export interface Thread {
   line: number | null;
   side: DiffSide;
   isOutdated: boolean;
+  isResolved: boolean;
   // True if any comment in this thread is in the viewer's pending review.
   hasPending: boolean;
 }
@@ -22,6 +27,7 @@ export interface ThreadIndex {
 export function buildThreadIndex(
   comments: ReviewComment[],
   pendingCommentIds: Set<number> = new Set(),
+  threadMetadata: Map<number, ThreadMetadata> = new Map(),
 ): ThreadIndex {
   const byId = new Map<number, ReviewComment>();
   for (const c of comments) byId.set(c.id, c);
@@ -60,14 +66,21 @@ export function buildThreadIndex(
     const root = byId.get(rootId) ?? members[0];
     const replies = members.filter((m) => m.id !== root.id);
     const hasPending = members.some((m) => pendingCommentIds.has(m.id));
+    // Any member's metadata entry describes the whole thread.
+    const meta =
+      members
+        .map((m) => threadMetadata.get(m.id))
+        .find((m): m is ThreadMetadata => !!m) ?? null;
     threads.push({
       id: root.id,
+      nodeId: meta?.nodeId ?? null,
       root,
       replies,
       path: root.path,
       line: root.line ?? root.originalLine,
       side: root.side ?? root.originalSide ?? "RIGHT",
       isOutdated: root.line == null,
+      isResolved: meta?.isResolved ?? false,
       hasPending,
     });
   }

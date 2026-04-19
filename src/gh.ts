@@ -337,16 +337,23 @@ export async function fetchPendingReview(
   }
 }
 
+export interface ThreadMetadata {
+  nodeId: string;
+  isResolved: boolean;
+}
+
 export interface ReviewState {
   comments: ReviewComment[];
   pendingReview: PendingReview | null;
   pendingCommentIds: Set<number>;
+  threadMetaByCommentId: Map<number, ThreadMetadata>;
 }
 
 export async function loadReviewState(ref: PrRef): Promise<ReviewState> {
-  const [submitted, pendingReview] = await Promise.all([
+  const [submitted, pendingReview, threadMetaByCommentId] = await Promise.all([
     fetchReviewComments(ref),
     fetchPendingReview(ref),
+    fetchThreadMetadata(ref),
   ]);
   const pendingComments = pendingReview
     ? await fetchCommentsForReview(ref, pendingReview.databaseId)
@@ -358,7 +365,76 @@ export async function loadReviewState(ref: PrRef): Promise<ReviewState> {
     comments: Array.from(byId.values()),
     pendingReview,
     pendingCommentIds: new Set(pendingComments.map((c) => c.id)),
+    threadMetaByCommentId,
   };
+}
+
+// GraphQL is the only place `isResolved` and the thread node id (needed for
+// resolve/unresolve mutations) live — REST /pulls/{n}/comments omits both.
+// We key by comment databaseId so callers can enrich their existing
+// ReviewComment-based view without rewriting the whole fetch path.
+async function fetchThreadMetadata(
+  ref: PrRef,
+): Promise<Map<number, ThreadMetadata>> {
+  const query = `
+    query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$num){
+          reviewThreads(first:100,after:$cursor){
+            pageInfo{ hasNextPage endCursor }
+            nodes{
+              id
+              isResolved
+              comments(first:100){ nodes{ databaseId } }
+            }
+          }
+        }
+      }
+    }`;
+  const out = new Map<number, ThreadMetadata>();
+  let cursor: string | null = null;
+  try {
+    while (true) {
+      const vars: Record<string, unknown> = {
+        owner: ref.owner,
+        repo: ref.repo,
+        num: ref.number,
+      };
+      if (cursor) vars.cursor = cursor;
+      const data = await gqlQuery<any>(query, vars);
+      const conn = data.repository?.pullRequest?.reviewThreads;
+      if (!conn) break;
+      for (const t of conn.nodes ?? []) {
+        const meta: ThreadMetadata = { nodeId: t.id, isResolved: !!t.isResolved };
+        for (const c of t.comments?.nodes ?? []) {
+          if (typeof c.databaseId === "number") out.set(c.databaseId, meta);
+        }
+      }
+      if (!conn.pageInfo?.hasNextPage) break;
+      cursor = conn.pageInfo.endCursor;
+    }
+  } catch {
+    // Non-fatal — thread metadata enriches the view but isn't required.
+  }
+  return out;
+}
+
+export async function resolveReviewThread(
+  threadNodeId: string,
+): Promise<void> {
+  await gqlQuery<any>(
+    `mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}`,
+    { id: threadNodeId },
+  );
+}
+
+export async function unresolveReviewThread(
+  threadNodeId: string,
+): Promise<void> {
+  await gqlQuery<any>(
+    `mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id}}}`,
+    { id: threadNodeId },
+  );
 }
 
 export interface AutoMergeState {
@@ -443,6 +519,108 @@ export async function submitPendingReview(
       }){ pullRequestReview{ id state } }
     }`;
   await gqlQuery<any>(mutation, { rid: reviewId, event, body });
+}
+
+export interface ChecksRollup {
+  state: "SUCCESS" | "FAILURE" | "PENDING" | "ERROR" | "EXPECTED" | string;
+  totalCount: number;
+  passing: number;
+  failing: number;
+  pending: number;
+}
+
+export async function fetchChecksRollup(
+  ref: PrRef,
+): Promise<ChecksRollup | null> {
+  const query = `
+    query($owner:String!,$repo:String!,$num:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$num){
+          commits(last:1){
+            nodes{
+              commit{
+                statusCheckRollup{
+                  state
+                  contexts(first:100){
+                    totalCount
+                    nodes{
+                      __typename
+                      ... on CheckRun { status conclusion }
+                      ... on StatusContext { state }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }`;
+  try {
+    const data = await gqlQuery<any>(query, {
+      owner: ref.owner,
+      repo: ref.repo,
+      num: ref.number,
+    });
+    const rollup =
+      data.repository?.pullRequest?.commits?.nodes?.[0]?.commit
+        ?.statusCheckRollup;
+    if (!rollup) return null;
+    let passing = 0;
+    let failing = 0;
+    let pending = 0;
+    for (const n of rollup.contexts?.nodes ?? []) {
+      if (n.__typename === "CheckRun") {
+        if (n.status !== "COMPLETED") pending++;
+        else if (
+          n.conclusion === "SUCCESS" ||
+          n.conclusion === "NEUTRAL" ||
+          n.conclusion === "SKIPPED"
+        )
+          passing++;
+        else failing++;
+      } else {
+        if (n.state === "PENDING") pending++;
+        else if (n.state === "SUCCESS") passing++;
+        else failing++;
+      }
+    }
+    return {
+      state: rollup.state,
+      totalCount: rollup.contexts?.totalCount ?? 0,
+      passing,
+      failing,
+      pending,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface PrCommit {
+  sha: string;
+  abbreviatedSha: string;
+  message: string;
+  authorLogin: string;
+  authorAvatarUrl: string;
+  authoredAt: string;
+  htmlUrl: string;
+}
+
+export async function fetchPrCommits(ref: PrRef): Promise<PrCommit[]> {
+  const arr = await ghApiJson<any[]>([
+    "--paginate",
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/commits?per_page=100`,
+  ]);
+  return arr.map((c) => ({
+    sha: c.sha,
+    abbreviatedSha: (c.sha ?? "").slice(0, 7),
+    message: c.commit?.message ?? "",
+    authorLogin: c.author?.login ?? c.commit?.author?.name ?? "",
+    authorAvatarUrl: c.author?.avatar_url ?? "",
+    authoredAt: c.commit?.author?.date ?? "",
+    htmlUrl: c.html_url ?? "",
+  }));
 }
 
 export async function disableAutoMerge(prNodeId: string): Promise<void> {

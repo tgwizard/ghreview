@@ -1,8 +1,10 @@
 import open from "open";
 import {
   fetchAuthedUser,
+  fetchChecksRollup,
   fetchFileAtRef,
   fetchIssueComments,
+  fetchPrCommits,
   fetchPrDiff,
   fetchPrInfo,
   loadReviewState,
@@ -110,15 +112,23 @@ async function main() {
 
   // Only .gitattributes depends on pr.headSha; everything else can run in
   // parallel with the PR fetch.
-  const [pr, authedUser, reviewState, issueComments, diff] = await Promise.all(
-    [
-      fetchPrInfo(ref),
-      fetchAuthedUser(),
-      loadReviewState(ref),
-      fetchIssueComments(ref),
-      fetchPrDiff(ref),
-    ],
-  );
+  const [
+    pr,
+    authedUser,
+    reviewState,
+    issueComments,
+    checks,
+    commits,
+    diff,
+  ] = await Promise.all([
+    fetchPrInfo(ref),
+    fetchAuthedUser(),
+    loadReviewState(ref),
+    fetchIssueComments(ref),
+    fetchChecksRollup(ref),
+    fetchPrCommits(ref),
+    fetchPrDiff(ref),
+  ]);
   const gitattributes = await fetchFileAtRef(
     ref,
     ".gitattributes",
@@ -134,6 +144,8 @@ async function main() {
     generatedMatcher,
     initialReviewState: reviewState,
     initialIssueComments: issueComments,
+    initialChecks: checks,
+    initialCommits: commits,
     port: args.port,
   });
   process.stdout.write(`\n  ${pr.title}\n`);
