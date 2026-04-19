@@ -805,6 +805,11 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .comment-link-btn { background: none; border: none; color: var(--text-dim); font-size: 11px; padding: 0; cursor: pointer; font-family: inherit; }
 .comment-link-btn:hover { color: var(--text); text-decoration: underline; }
 .comment-link-btn.danger:hover { color: var(--del-fg); }
+.comment-actions .confirm-text { font-size: 11px; color: var(--text-dim); }
+.comment-actions .confirm-sep { color: var(--border); font-size: 11px; }
+.comment-actions .confirm-yes { color: var(--del-fg); font-weight: 600; }
+.comment-actions .confirm-yes:hover { color: var(--del-fg); filter: brightness(1.2); }
+.comment-actions .confirm-no { color: var(--text); font-weight: 600; }
 .comment-edit-form { margin-top: 4px; }
 .comment-edit-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 60px; }
 .comment-edit-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
@@ -1121,20 +1126,55 @@ const CLIENT_SCRIPT = `
     });
   }
 
-  async function deleteComment(article) {
-    if (!confirm("Delete this comment?")) return;
-    const id = article.dataset.commentId;
-    try {
-      const r = await fetch("/api/comment/" + encodeURIComponent(id), {
-        method: "DELETE",
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-      location.reload();
-    } catch (err) {
-      alert("Delete failed: " + String((err && err.message) || err));
-    }
+  function deleteComment(article) {
+    const actions = article.querySelector(".comment-actions");
+    if (!actions || actions.dataset.confirming === "1") return;
+    actions.dataset.confirming = "1";
+    const prev = actions.innerHTML;
+    // "Are you sure?" is placed FIRST so it sits where the Delete button
+    // was — the cursor lands on safe text, not on Yes/No.
+    actions.innerHTML =
+      '<span class="confirm-text">Are you sure?</span>' +
+      '<button type="button" class="comment-link-btn confirm-yes" data-role="confirm-yes">Yes</button>' +
+      '<span class="confirm-sep">|</span>' +
+      '<button type="button" class="comment-link-btn confirm-no" data-role="confirm-no">No</button>';
+
+    const cleanup = () => {
+      actions.innerHTML = prev;
+      delete actions.dataset.confirming;
+      document.removeEventListener("keydown", onKey);
+    };
+    const onKey = (ev) => {
+      if (ev.key === "Escape") cleanup();
+    };
+    document.addEventListener("keydown", onKey);
+
+    actions.addEventListener("click", async (ev) => {
+      const t = ev.target;
+      if (!(t instanceof Element)) return;
+      const role = t.getAttribute("data-role");
+      if (role === "confirm-no") {
+        cleanup();
+        return;
+      }
+      if (role !== "confirm-yes") return;
+      const id = article.dataset.commentId;
+      t.textContent = "Deleting…";
+      t.disabled = true;
+      try {
+        const r = await fetch("/api/comment/" + encodeURIComponent(id), {
+          method: "DELETE",
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+        location.reload();
+      } catch (err) {
+        t.textContent = "Yes";
+        t.disabled = false;
+        alert("Delete failed: " + String((err && err.message) || err));
+      }
+    });
   }
 
   // Restore scroll after page reload.

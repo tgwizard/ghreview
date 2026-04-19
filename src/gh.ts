@@ -134,6 +134,7 @@ function synthesizeFileDiff(f: any): string {
 
 export interface ReviewComment {
   id: number;
+  nodeId: string; // GraphQL node id, needed for update/delete mutations.
   inReplyToId: number | null;
   pullRequestReviewId: number | null;
   userLogin: string;
@@ -175,30 +176,30 @@ export async function fetchCommentsForReview(
 }
 
 export async function editReviewComment(
-  ref: PrRef,
-  commentId: number,
+  commentNodeId: string,
   body: string,
 ): Promise<void> {
-  await runGh([
-    "api",
-    "-X",
-    "PATCH",
-    "-f",
-    `body=${body}`,
-    `/repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
-  ]);
+  // REST PATCH /pulls/comments/{id} 404s on pending comments; GraphQL
+  // handles both submitted and pending.
+  const mutation = `
+    mutation($id:ID!,$body:String!){
+      updatePullRequestReviewComment(input:{
+        pullRequestReviewCommentId:$id, body:$body
+      }){ pullRequestReviewComment{ id } }
+    }`;
+  await gqlQuery<any>(mutation, { id: commentNodeId, body });
 }
 
 export async function deleteReviewComment(
-  ref: PrRef,
-  commentId: number,
+  commentNodeId: string,
 ): Promise<void> {
-  await runGh([
-    "api",
-    "-X",
-    "DELETE",
-    `/repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
-  ]);
+  const mutation = `
+    mutation($id:ID!){
+      deletePullRequestReviewComment(input:{id:$id}){
+        pullRequestReview{ id }
+      }
+    }`;
+  await gqlQuery<any>(mutation, { id: commentNodeId });
 }
 
 export async function replyToReviewComment(
@@ -221,6 +222,7 @@ export async function replyToReviewComment(
 function mapReviewComment(c: any): ReviewComment {
   return {
     id: c.id,
+    nodeId: c.node_id ?? "",
     inReplyToId: c.in_reply_to_id ?? null,
     pullRequestReviewId: c.pull_request_review_id ?? null,
     userLogin: c.user?.login ?? "",

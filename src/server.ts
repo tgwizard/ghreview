@@ -211,17 +211,21 @@ export async function startServer(
         if (!Number.isInteger(id) || id <= 0) {
           return json(res, 400, { error: "invalid comment id" });
         }
+        const target = comments.find((c) => c.id === id);
+        if (!target || !target.nodeId) {
+          return json(res, 404, { error: "comment not found" });
+        }
         if (req.method === "DELETE") {
-          await deleteReviewComment(opts.ref, id);
+          await deleteReviewComment(target.nodeId);
           await refreshReview();
           return json(res, 200, { ok: true });
         }
         const body = (await readJson(req)) as { body?: string };
         const text = (body?.body ?? "").trim();
         if (text === "") {
-          await deleteReviewComment(opts.ref, id);
+          await deleteReviewComment(target.nodeId);
         } else {
-          await editReviewComment(opts.ref, id, body.body ?? "");
+          await editReviewComment(target.nodeId, body.body ?? "");
         }
         await refreshReview();
         return json(res, 200, { ok: true });
