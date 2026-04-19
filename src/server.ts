@@ -10,6 +10,7 @@ import {
   fetchCommentsForReview,
   fetchPendingReview,
   fetchReviewComments,
+  replyToReviewComment,
   submitPendingReview,
   type AuthedUser,
   type AutoMergeState,
@@ -176,6 +177,29 @@ export async function startServer(
           const state: AutoMergeState = await fetchAutoMerge(opts.ref);
           return json(res, 200, state);
         }
+      }
+
+      if (
+        req.method === "POST" &&
+        path.startsWith("/api/comment/") &&
+        path.endsWith("/reply")
+      ) {
+        const idStr = path.slice(
+          "/api/comment/".length,
+          -"/reply".length,
+        );
+        const id = Number(idStr);
+        if (!Number.isInteger(id) || id <= 0) {
+          return json(res, 400, { error: "invalid comment id" });
+        }
+        const body = (await readJson(req)) as { body?: string };
+        const text = (body?.body ?? "").trim();
+        if (!text) return json(res, 400, { error: "empty body" });
+        // Ensure pending review exists so the reply attaches to it.
+        await ensurePendingReview();
+        await replyToReviewComment(opts.ref, id, body.body ?? "");
+        await refreshReview();
+        return json(res, 200, { ok: true });
       }
 
       if (

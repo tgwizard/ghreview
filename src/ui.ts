@@ -489,7 +489,7 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
   // `<pr-url>/files#r<id>` lands on the diff view with the thread anchored,
   // not the conversation timeline (which is what html_url from the API gives).
   const filesUrl = `${ctx.prUrl}/files#r${thread.root.id}`;
-  return `<div class="thread${thread.hasPending ? " has-pending" : ""}">
+  return `<div class="thread${thread.hasPending ? " has-pending" : ""}" data-thread-root-id="${thread.root.id}">
     <div class="thread-header">
       ${pendingBadge}
       ${outdatedBadge}
@@ -498,6 +498,9 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
       <a class="thread-link" href="${escapeHtml(filesUrl)}" target="_blank" rel="noopener" title="Open on GitHub Files Changed">↗</a>
     </div>
     ${commentsHtml}
+    <div class="thread-reply-footer">
+      <button type="button" class="comment-link-btn" data-action="reply-thread">Reply</button>
+    </div>
   </div>`;
 }
 
@@ -743,6 +746,11 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .comment-edit-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 60px; }
 .comment-edit-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
 .comment-edit-form-actions { display: flex; gap: 8px; margin-top: 6px; }
+.thread-reply-footer { border-top: 1px solid var(--border); padding: 6px 12px; }
+.thread-reply-form { padding: 10px 12px; border-top: 1px solid var(--border); }
+.thread-reply-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 60px; }
+.thread-reply-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+.thread-reply-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
 
 /* Buttons */
 .btn { background: var(--bg-hover); color: var(--text); border: 1px solid var(--border); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; }
@@ -889,8 +897,72 @@ const CLIENT_SCRIPT = `
     } else if (act === "delete-comment") {
       const article = t.closest("article.comment");
       if (article) deleteComment(article);
+    } else if (act === "reply-thread") {
+      const thread = t.closest(".thread");
+      if (thread) openReplyForm(thread);
     }
   });
+
+  function openReplyForm(thread) {
+    const footer = thread.querySelector(".thread-reply-footer");
+    if (!footer || footer.dataset.replying === "1") {
+      const existing = thread.querySelector(".thread-reply-form textarea");
+      if (existing) existing.focus();
+      return;
+    }
+    footer.dataset.replying = "1";
+    const rootId = thread.dataset.threadRootId;
+    const button = footer.querySelector(".comment-link-btn");
+    if (button) button.style.display = "none";
+    const form = document.createElement("form");
+    form.className = "thread-reply-form";
+    form.innerHTML =
+      '<textarea placeholder="Reply" required></textarea>' +
+      '<div class="comment-form-error"></div>' +
+      '<div class="thread-reply-form-actions">' +
+        '<button type="button" class="btn" data-action="cancel-reply">Cancel</button>' +
+        '<button type="submit" class="btn primary">Reply</button>' +
+      '</div>';
+    thread.appendChild(form);
+    const ta = form.querySelector("textarea");
+    const errEl = form.querySelector(".comment-form-error");
+    ta.focus();
+
+    ta.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    form.addEventListener("click", (ev) => {
+      if (ev.target && ev.target.dataset && ev.target.dataset.action === "cancel-reply") {
+        form.remove();
+        delete footer.dataset.replying;
+        if (button) button.style.display = "";
+      }
+    });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const body = ta.value.trim();
+      errEl.classList.remove("visible");
+      if (!body) return;
+      const submitBtn = form.querySelector(".btn.primary");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Sending…";
+      try {
+        await postJson("/api/comment/" + encodeURIComponent(rootId) + "/reply", {
+          body,
+        });
+        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+        location.reload();
+      } catch (err) {
+        errEl.textContent = String((err && err.message) || err);
+        errEl.classList.add("visible");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Reply";
+      }
+    });
+  }
 
   function openEditForm(article) {
     const md = article.querySelector(".comment-md");

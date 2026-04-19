@@ -201,6 +201,23 @@ export async function deleteReviewComment(
   ]);
 }
 
+export async function replyToReviewComment(
+  ref: PrRef,
+  parentCommentId: number,
+  body: string,
+): Promise<void> {
+  // GitHub auto-attaches the reply to the viewer's pending review if one
+  // exists, so the server ensures there's a pending review first.
+  await runGh([
+    "api",
+    "-X",
+    "POST",
+    "-f",
+    `body=${body}`,
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${parentCommentId}/replies`,
+  ]);
+}
+
 function mapReviewComment(c: any): ReviewComment {
   return {
     id: c.id,
