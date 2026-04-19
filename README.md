@@ -10,7 +10,7 @@ A local web UI for reviewing large GitHub pull requests. Spins up a small HTTP s
 ## Usage
 
 ```sh
-npx ghreview https://github.com/owner/repo/pull/123
+npx @tgwizard/ghreview https://github.com/owner/repo/pull/123
 ```
 
 This fetches the PR metadata and unified diff via `gh`, starts a local web server on a random free port (at a path matching GitHub's — e.g. `http://127.0.0.1:PORT/owner/repo/pull/123`), and opens the rendered review page in your default browser.
@@ -61,7 +61,7 @@ Public PRs you can point ghreview at:
 
 ## Supply-chain security
 
-`npx ghreview` runs code on your machine, so the install path is hardened against attacks on the package graph.
+`npx @tgwizard/ghreview` runs code on your machine, so the install path is hardened against attacks on the package graph.
 
 - **Zero runtime dependencies.** `package.json` declares `"dependencies": {}`. The build step (`esbuild`) inlines every runtime library into a single `dist/cli.js`. No dependency resolution happens at install time, so a compromised new version of `marked` / `sanitize-html` / `highlight.js` / etc. can never ship to you between releases.
 - **Reproducible builds.** `devDependencies` are pinned to exact versions, no `^` ranges.
@@ -75,7 +75,7 @@ npm audit signatures
 
 If the provenance check fails, don't run the binary.
 
-For the strictest posture, pin the exact version: `npx ghreview@0.0.1 <pr-url>`.
+For the strictest posture, pin the exact version: `npx @tgwizard/ghreview@X.Y.Z <pr-url>`.
 
 ## Development
 
