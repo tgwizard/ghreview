@@ -104,15 +104,18 @@ async function main() {
     `Fetching ${ref.owner}/${ref.repo}#${ref.number} via gh…\n`,
   );
 
-  const [pr, authedUser, reviewComments] = await Promise.all([
+  // Only .gitattributes needs pr.headSha — everything else runs in parallel.
+  const [pr, authedUser, reviewComments, diff] = await Promise.all([
     fetchPrInfo(ref),
     fetchAuthedUser(),
     fetchReviewComments(ref),
-  ]);
-  const [diff, gitattributes] = await Promise.all([
     fetchPrDiff(ref),
-    fetchFileAtRef(ref, ".gitattributes", pr.headSha),
   ]);
+  const gitattributes = await fetchFileAtRef(
+    ref,
+    ".gitattributes",
+    pr.headSha,
+  );
   const generatedMatcher = buildGeneratedMatcher(gitattributes);
   const threadIndex = buildThreadIndex(reviewComments);
 

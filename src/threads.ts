@@ -1,20 +1,20 @@
-import type { ReviewComment } from "./gh.js";
+import type { DiffSide, ReviewComment } from "./gh.js";
 
 export interface Thread {
   id: number;
   root: ReviewComment;
   replies: ReviewComment[];
   path: string;
-  // The line/side GitHub considers "current" for this thread. Falls back to
-  // the original line/side if the thread is outdated (line === null).
+  // Current line if the thread is live, original line if outdated, null if
+  // neither was reported.
   line: number | null;
-  side: "LEFT" | "RIGHT";
+  side: DiffSide;
   isOutdated: boolean;
 }
 
 export interface ThreadIndex {
   all: Thread[];
-  getAt(path: string, side: "LEFT" | "RIGHT", line: number): Thread[];
+  getAt(path: string, side: DiffSide, line: number): Thread[];
 }
 
 export function buildThreadIndex(comments: ReviewComment[]): ThreadIndex {
@@ -54,31 +54,26 @@ export function buildThreadIndex(comments: ReviewComment[]): ThreadIndex {
     members.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const root = byId.get(rootId) ?? members[0];
     const replies = members.filter((m) => m.id !== root.id);
-    const isOutdated = root.line == null;
-    // For display we keep whatever location info we have — but for anchoring,
-    // only use the current line. Threads without a current line go to the
-    // per-file "outdated" block (matching GitHub's Files Changed behavior).
-    const line = root.line;
-    const side = root.side ?? root.originalSide ?? ("RIGHT" as const);
     threads.push({
       id: root.id,
       root,
       replies,
       path: root.path,
-      line: line ?? root.originalLine,
-      side,
-      isOutdated,
+      line: root.line ?? root.originalLine,
+      side: root.side ?? root.originalSide ?? "RIGHT",
+      isOutdated: root.line == null,
     });
   }
 
   threads.sort((a, b) => a.root.createdAt.localeCompare(b.root.createdAt));
 
+  // Outdated threads aren't indexed here; their stored line may no longer
+  // match anything in the current diff, so the renderer puts them in a
+  // per-file "outdated" block instead.
   const lookup = new Map<string, Thread[]>();
-  const keyOf = (path: string, side: string, line: number) =>
+  const keyOf = (path: string, side: DiffSide, line: number) =>
     `${path}\u0000${side}\u0000${line}`;
   for (const t of threads) {
-    // Only anchor non-outdated threads. Outdated threads render in the
-    // per-file "outdated" block; their line may no longer match anything.
     if (t.isOutdated || t.line == null) continue;
     const k = keyOf(t.path, t.side, t.line);
     let list = lookup.get(k);

@@ -1,11 +1,16 @@
 import parseDiff from "parse-diff";
-import type { AuthedUser, PrInfo } from "./gh.js";
+import type { AuthedUser, PrInfo, ReviewComment } from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
 import { renderMarkdown } from "./markdown.js";
 import type { Thread, ThreadIndex } from "./threads.js";
 
 const NOOP_MATCHER: GeneratedMatcher = { isGenerated: () => false };
 const EMPTY_INDEX: ThreadIndex = { all: [], getAt: () => [] };
+
+interface RenderContext {
+  prUrl: string;
+  threadIndex: ThreadIndex;
+}
 
 export function renderPage(
   pr: PrInfo,
@@ -15,10 +20,16 @@ export function renderPage(
   threadIndex: ThreadIndex = EMPTY_INDEX,
 ): string {
   const files = parseDiff(rawDiff);
-  const generatedFlags = files.map((f) =>
-    generatedMatcher.isGenerated(matchablePath(f)),
-  );
-  const generatedCount = generatedFlags.filter(Boolean).length;
+  const fileInfos = files.map((f, i) => {
+    const mPath = matchablePath(f);
+    return {
+      file: f,
+      index: i,
+      matchPath: mPath,
+      isGenerated: generatedMatcher.isGenerated(mPath),
+    };
+  });
+  const generatedCount = fileInfos.filter((fi) => fi.isGenerated).length;
 
   const threadsByFile = new Map<string, Thread[]>();
   for (const t of threadIndex.all) {
@@ -27,31 +38,30 @@ export function renderPage(
     threadsByFile.set(t.path, list);
   }
 
-  const fileNav = files
-    .map((f, i) => {
-      const path = displayPath(f);
-      const mPath = matchablePath(f);
-      const adds = f.additions ?? 0;
-      const dels = f.deletions ?? 0;
-      const isGen = generatedFlags[i];
-      const threadCount = threadsByFile.get(mPath)?.length ?? 0;
+  const ctx: RenderContext = { prUrl: pr.url, threadIndex };
+
+  const fileNav = fileInfos
+    .map(({ file, index, matchPath, isGenerated }) => {
+      const path = displayPath(file);
+      const adds = file.additions ?? 0;
+      const dels = file.deletions ?? 0;
+      const threadCount = threadsByFile.get(matchPath)?.length ?? 0;
       const threadBadge =
         threadCount > 0
           ? `<span class="fn-threads" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span> `
           : "";
-      return `<li class="${isGen ? "is-generated" : ""}"><a href="#file-${i}"><span class="fn-path">${escapeHtml(path)}</span><span class="fn-stats">${threadBadge}${isGen ? '<span class="gen-dot" title="generated">●</span> ' : ""}<span class="add">+${adds}</span> <span class="del">-${dels}</span></span></a></li>`;
+      return `<li class="${isGenerated ? "is-generated" : ""}"><a href="#file-${index}"><span class="fn-path">${escapeHtml(path)}</span><span class="fn-stats">${threadBadge}${isGenerated ? '<span class="gen-dot" title="generated">●</span> ' : ""}<span class="add">+${adds}</span> <span class="del">-${dels}</span></span></a></li>`;
     })
     .join("");
 
-  const fileSections = files
-    .map((f, i) =>
+  const fileSections = fileInfos
+    .map(({ file, index, matchPath, isGenerated }) =>
       renderFile(
-        f,
-        i,
-        generatedFlags[i],
-        threadIndex,
-        threadsByFile.get(matchablePath(f)) ?? [],
-        pr.url,
+        file,
+        index,
+        isGenerated,
+        threadsByFile.get(matchPath) ?? [],
+        ctx,
       ),
     )
     .join("");
@@ -104,9 +114,8 @@ function renderFile(
   file: parseDiff.File,
   index: number,
   isGenerated: boolean,
-  threadIndex: ThreadIndex,
   threadsForFile: Thread[],
-  prUrl: string,
+  ctx: RenderContext,
 ): string {
   const path = displayPath(file);
   const mPath = matchablePath(file);
@@ -114,7 +123,7 @@ function renderFile(
 
   const placedIds = new Set<number>();
   const chunks = file.chunks
-    .map((c) => renderChunk(c, mPath, threadIndex, placedIds, prUrl))
+    .map((c) => renderChunk(c, mPath, placedIds, ctx))
     .join("");
 
   const unplaced = threadsForFile.filter((t) => !placedIds.has(t.id));
@@ -122,7 +131,7 @@ function renderFile(
     unplaced.length > 0
       ? `<div class="outdated-threads">
         <div class="outdated-threads__header">${unplaced.length} outdated thread${unplaced.length === 1 ? "" : "s"} on this file</div>
-        ${unplaced.map((t) => renderThread(t, prUrl)).join("")}
+        ${unplaced.map((t) => renderThread(t, ctx)).join("")}
       </div>`
       : "";
 
@@ -171,16 +180,25 @@ function renderAuthChip(user: AuthedUser | null): string {
   if (!user) {
     return `<span class="auth-chip auth-chip--none" title="Not signed in to GitHub CLI">not signed in</span>`;
   }
-  const avatar = user.avatarUrl
-    ? `<img class="auth-avatar" src="${escapeHtml(user.avatarUrl)}&s=40" alt="" />`
-    : "";
-  return `<a class="auth-chip" href="https://github.com/${encodeURIComponent(user.login)}" target="_blank" rel="noopener" title="Signed in to gh CLI as ${escapeHtml(user.login)}">
-    ${avatar}
+  return `<a class="auth-chip" href="${userProfileUrl(user.login)}" target="_blank" rel="noopener" title="Signed in to gh CLI as ${escapeHtml(user.login)}">
+    ${avatarImg(user.avatarUrl, "auth-avatar")}
     <span class="auth-chip__meta">
       <span class="auth-chip__label">reviewing as</span>
       <span class="auth-chip__login">${escapeHtml(user.login)}</span>
     </span>
   </a>`;
+}
+
+function avatarImg(url: string, className: string): string {
+  if (!url) return `<span class="${className} ${className}--none"></span>`;
+  // GitHub avatar URLs always include a query string; append s=40 for the
+  // ~2x-retina pixel size our 22–28 px slots need.
+  const sep = url.includes("?") ? "&" : "?";
+  return `<img class="${className}" src="${escapeHtml(url + sep + "s=40")}" alt="" />`;
+}
+
+function userProfileUrl(login: string): string {
+  return `https://github.com/${encodeURIComponent(login)}`;
 }
 
 function matchablePath(file: parseDiff.File): string {
@@ -192,9 +210,8 @@ function matchablePath(file: parseDiff.File): string {
 function renderChunk(
   chunk: parseDiff.Chunk,
   path: string,
-  threadIndex: ThreadIndex,
   placedIds: Set<number>,
-  prUrl: string,
+  ctx: RenderContext,
 ): string {
   const rows = chunk.changes
     .map((ch) => {
@@ -212,7 +229,7 @@ function renderChunk(
       const seen = new Set<number>();
       const pick = (side: "LEFT" | "RIGHT", line: number | null) => {
         if (line == null) return;
-        for (const t of threadIndex.getAt(path, side, line)) {
+        for (const t of ctx.threadIndex.getAt(path, side, line)) {
           if (seen.has(t.id) || placedIds.has(t.id)) continue;
           seen.add(t.id);
           placedIds.add(t.id);
@@ -228,7 +245,7 @@ function renderChunk(
       const threadRows = threads
         .map(
           (t) =>
-            `<tr class="thread-row"><td colspan="4">${renderThread(t, prUrl)}</td></tr>`,
+            `<tr class="thread-row"><td colspan="4">${renderThread(t, ctx)}</td></tr>`,
         )
         .join("");
 
@@ -243,7 +260,7 @@ function renderChunk(
 </tbody></table>`;
 }
 
-function renderThread(thread: Thread, prUrl: string): string {
+function renderThread(thread: Thread, ctx: RenderContext): string {
   const comments = [thread.root, ...thread.replies];
   const commentsHtml = comments.map((c) => renderComment(c)).join("");
   const outdatedBadge = thread.isOutdated
@@ -258,10 +275,9 @@ function renderThread(thread: Thread, prUrl: string): string {
     replyCount > 0
       ? `<span class="thread-pill">${replyCount} repl${replyCount === 1 ? "y" : "ies"}</span>`
       : "";
-  // GitHub's Files Changed page anchors threads as `<pr-url>/files#r<id>`.
-  // This is the right landing spot so clicking "open on GitHub" keeps you
-  // in the same diff context rather than the conversation timeline.
-  const filesUrl = `${prUrl}/files#r${thread.root.id}`;
+  // `<pr-url>/files#r<id>` lands on the diff view with the thread anchored,
+  // not the conversation timeline (which is what html_url from the API gives).
+  const filesUrl = `${ctx.prUrl}/files#r${thread.root.id}`;
   return `<div class="thread">
     <div class="thread-header">
       ${outdatedBadge}
@@ -273,26 +289,16 @@ function renderThread(thread: Thread, prUrl: string): string {
   </div>`;
 }
 
-function renderComment(c: {
-  userLogin: string;
-  userAvatarUrl: string;
-  body: string;
-  createdAt: string;
-  updatedAt: string;
-  htmlUrl: string;
-}): string {
-  const avatar = c.userAvatarUrl
-    ? `<img class="comment-avatar" src="${escapeHtml(c.userAvatarUrl)}&s=40" alt="" />`
-    : `<span class="comment-avatar comment-avatar--none"></span>`;
+function renderComment(c: ReviewComment): string {
   const edited =
     c.updatedAt && c.updatedAt !== c.createdAt
       ? ` <span class="comment-edited" title="edited ${escapeHtml(c.updatedAt)}">(edited)</span>`
       : "";
   return `<article class="comment">
-    ${avatar}
+    ${avatarImg(c.userAvatarUrl, "comment-avatar")}
     <div class="comment-body">
       <div class="comment-meta">
-        <a class="comment-author" href="https://github.com/${encodeURIComponent(c.userLogin)}" target="_blank" rel="noopener">${escapeHtml(c.userLogin)}</a>
+        <a class="comment-author" href="${userProfileUrl(c.userLogin)}" target="_blank" rel="noopener">${escapeHtml(c.userLogin)}</a>
         <span class="comment-time" title="${escapeHtml(c.createdAt)}">${formatTime(c.createdAt)}</span>
         ${edited}
       </div>

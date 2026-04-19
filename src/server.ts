@@ -24,6 +24,16 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
   const prPath = `/${encodeURIComponent(opts.ref.owner)}/${encodeURIComponent(opts.ref.repo)}/pull/${opts.ref.number}`;
   const filesPath = `${prPath}/files`;
 
+  // Inputs are immutable for the lifetime of the process, so render once.
+  const prJson = JSON.stringify(opts.pr, null, 2);
+  const html = renderPage(
+    opts.pr,
+    opts.diff,
+    opts.generatedMatcher,
+    opts.authedUser,
+    opts.threadIndex,
+  );
+
   const server = http.createServer((req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -40,13 +50,6 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
 
       if (url.pathname === prPath || url.pathname === filesPath) {
-        const html = renderPage(
-          opts.pr,
-          opts.diff,
-          opts.generatedMatcher,
-          opts.authedUser,
-          opts.threadIndex,
-        );
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "no-store",
@@ -63,7 +66,7 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
 
       if (url.pathname === `${prPath}.json` || url.pathname === "/pr.json") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(opts.pr, null, 2));
+        res.end(prJson);
         return;
       }
 

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+export type DiffSide = "LEFT" | "RIGHT";
+
 export interface PrRef {
   owner: string;
   repo: string;
@@ -14,8 +16,7 @@ export interface AuthedUser {
 
 export async function fetchAuthedUser(): Promise<AuthedUser | null> {
   try {
-    const json = await runGh(["api", "/user"]);
-    const data = JSON.parse(json);
+    const data = await ghApiJson<any>(["/user"]);
     return {
       login: data.login,
       avatarUrl: data.avatar_url,
@@ -56,9 +57,9 @@ export function parsePrUrl(input: string): PrRef {
 }
 
 export async function fetchPrInfo(ref: PrRef): Promise<PrInfo> {
-  const path = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-  const json = await runGh(["api", path]);
-  const data = JSON.parse(json);
+  const data = await ghApiJson<any>([
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`,
+  ]);
   return {
     number: data.number,
     title: data.title,
@@ -78,13 +79,55 @@ export async function fetchPrInfo(ref: PrRef): Promise<PrInfo> {
 }
 
 export async function fetchPrDiff(ref: PrRef): Promise<string> {
-  const path = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
-  return await runGh([
-    "api",
-    "-H",
-    "Accept: application/vnd.github.v3.diff",
-    path,
+  // We avoid the `Accept: application/vnd.github.v3.diff` endpoint because it
+  // returns HTTP 406 for PRs with diffs > 20k lines — exactly the case this
+  // tool exists to review. `/pulls/{n}/files` is paginated, has no global
+  // line limit, and returns per-file `patch` hunks we can stitch together.
+  const files = await ghApiJson<any[]>([
+    "--paginate",
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/files?per_page=100`,
   ]);
+  return files.map(synthesizeFileDiff).join("");
+}
+
+function synthesizeFileDiff(f: any): string {
+  const filename: string = f.filename;
+  const prev: string = f.previous_filename ?? filename;
+  const status: string = f.status;
+  const lines: string[] = [];
+
+  if (status === "renamed") {
+    lines.push(`diff --git a/${prev} b/${filename}`);
+    lines.push(`rename from ${prev}`);
+    lines.push(`rename to ${filename}`);
+    if (f.patch) {
+      lines.push(`--- a/${prev}`);
+      lines.push(`+++ b/${filename}`);
+    }
+  } else if (status === "added") {
+    lines.push(`diff --git a/${filename} b/${filename}`);
+    lines.push("new file mode 100644");
+    if (f.patch) {
+      lines.push("--- /dev/null");
+      lines.push(`+++ b/${filename}`);
+    }
+  } else if (status === "removed") {
+    lines.push(`diff --git a/${filename} b/${filename}`);
+    lines.push("deleted file mode 100644");
+    if (f.patch) {
+      lines.push(`--- a/${filename}`);
+      lines.push("+++ /dev/null");
+    }
+  } else {
+    lines.push(`diff --git a/${prev} b/${filename}`);
+    if (f.patch) {
+      lines.push(`--- a/${prev}`);
+      lines.push(`+++ b/${filename}`);
+    }
+  }
+
+  if (f.patch) lines.push(f.patch);
+  return lines.join("\n") + "\n";
 }
 
 export interface ReviewComment {
@@ -98,20 +141,19 @@ export interface ReviewComment {
   htmlUrl: string;
   path: string;
   line: number | null;
-  side: "LEFT" | "RIGHT" | null;
+  side: DiffSide | null;
   originalLine: number | null;
-  originalSide: "LEFT" | "RIGHT" | null;
-  startLine: number | null;
-  startSide: "LEFT" | "RIGHT" | null;
+  originalSide: DiffSide | null;
 }
 
 export async function fetchReviewComments(
   ref: PrRef,
 ): Promise<ReviewComment[]> {
-  const path = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100`;
-  const json = await runGh(["api", "--paginate", path]);
   // --paginate concatenates JSON arrays across pages into a single array.
-  const arr = JSON.parse(json) as any[];
+  const arr = await ghApiJson<any[]>([
+    "--paginate",
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100`,
+  ]);
   return arr.map((c) => ({
     id: c.id,
     inReplyToId: c.in_reply_to_id ?? null,
@@ -126,12 +168,10 @@ export async function fetchReviewComments(
     side: normalizeSide(c.side),
     originalLine: c.original_line ?? null,
     originalSide: normalizeSide(c.original_side),
-    startLine: c.start_line ?? null,
-    startSide: normalizeSide(c.start_side),
   }));
 }
 
-function normalizeSide(v: unknown): "LEFT" | "RIGHT" | null {
+function normalizeSide(v: unknown): DiffSide | null {
   return v === "LEFT" || v === "RIGHT" ? v : null;
 }
 
@@ -154,6 +194,10 @@ export async function fetchFileAtRef(
     if (/HTTP 404/i.test(msg) || /Not Found/i.test(msg)) return null;
     throw err;
   }
+}
+
+async function ghApiJson<T>(apiArgs: string[]): Promise<T> {
+  return JSON.parse(await runGh(["api", ...apiArgs])) as T;
 }
 
 function runGh(args: string[]): Promise<string> {
