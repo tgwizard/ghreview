@@ -28,21 +28,32 @@ import {
   type PrRef,
   type ReviewState,
 } from "./gh.js";
-import { buildGeneratedMatcher, type GeneratedMatcher } from "./gitattributes.js";
+import {
+  buildGeneratedMatcher,
+  type GeneratedMatcher,
+} from "./gitattributes.js";
 import { detectLanguage } from "./highlight.js";
 import { buildThreadIndex } from "./threads.js";
 import { renderContextRow, renderPage } from "./ui.js";
 
-export interface ServerOptions {
-  ref: PrRef;
+export interface ReadyData {
   pr: PrInfo;
   diff: string;
   authedUser: AuthedUser | null;
   generatedMatcher: GeneratedMatcher;
-  initialReviewState: ReviewState;
-  initialIssueComments: IssueComment[];
-  initialChecks: ChecksRollup | null;
-  initialCommits: PrCommit[];
+  reviewState: ReviewState;
+  issueComments: IssueComment[];
+  checks: ChecksRollup | null;
+  commits: PrCommit[];
+}
+
+export interface ServerOptions {
+  ref: PrRef;
+  // Resolved when the startup fetches (PR info, diff, review state, etc.)
+  // complete. Until then the server runs in "loading" mode — the browser
+  // can connect and get a self-polling placeholder page so the window
+  // opens immediately instead of waiting on the network.
+  ready: Promise<ReadyData>;
   port?: number;
 }
 
@@ -52,58 +63,85 @@ export interface RunningServer {
   close: () => Promise<void>;
 }
 
+type State =
+  | { kind: "loading" }
+  | { kind: "ready"; data: ReadyData }
+  | { kind: "error"; message: string };
+
 export async function startServer(
   opts: ServerOptions,
 ): Promise<RunningServer> {
   const prPath = `/${encodeURIComponent(opts.ref.owner)}/${encodeURIComponent(opts.ref.repo)}/pull/${opts.ref.number}`;
   const filesPath = `${prPath}/files`;
 
-  let pr = opts.pr;
-  let diff = opts.diff;
-  let generatedMatcher = opts.generatedMatcher;
-  let review = opts.initialReviewState;
-  let issueComments = opts.initialIssueComments;
-  let checks = opts.initialChecks;
-  let commits = opts.initialCommits;
+  let state: State = { kind: "loading" };
   let cachedHtml: string | null = null;
+  const fileLinesCache = new Map<string, string[] | null>();
 
-  const renderHtml = () => {
+  opts.ready
+    .then((data) => {
+      state = { kind: "ready", data };
+      cachedHtml = null;
+    })
+    .catch((err) => {
+      state = {
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+      cachedHtml = null;
+    });
+
+  const ready = (res: ServerResponse): ReadyData | null => {
+    if (state.kind === "ready") return state.data;
+    if (state.kind === "error") {
+      jsonRes(res, 503, { error: state.message });
+    } else {
+      jsonRes(res, 503, { error: "still loading" });
+    }
+    return null;
+  };
+
+  const renderHtml = (): string => {
+    if (state.kind !== "ready") return renderLoadingPage(state, prPath);
     if (cachedHtml) return cachedHtml;
+    const d = state.data;
     const threadIndex = buildThreadIndex(
-      review.comments,
-      review.pendingCommentIds,
-      review.threadMetaByCommentId,
+      d.reviewState.comments,
+      d.reviewState.pendingCommentIds,
+      d.reviewState.threadMetaByCommentId,
     );
     cachedHtml = renderPage(
-      pr,
-      diff,
-      generatedMatcher,
-      opts.authedUser,
+      d.pr,
+      d.diff,
+      d.generatedMatcher,
+      d.authedUser,
       threadIndex,
-      review.pendingReview,
-      review.pendingCommentIds,
-      issueComments,
-      checks,
-      commits,
+      d.reviewState.pendingReview,
+      d.reviewState.pendingCommentIds,
+      d.issueComments,
+      d.checks,
+      d.commits,
     );
     return cachedHtml;
   };
 
   const refreshReview = async () => {
+    if (state.kind !== "ready") return;
     const [next, issues, checksRollup, newCommits] = await Promise.all([
       loadReviewState(opts.ref),
       fetchIssueComments(opts.ref),
       fetchChecksRollup(opts.ref),
       fetchPrCommits(opts.ref),
     ]);
-    review = next;
-    issueComments = issues;
-    checks = checksRollup;
-    commits = newCommits;
+    state.data.reviewState = next;
+    state.data.issueComments = issues;
+    state.data.checks = checksRollup;
+    state.data.commits = newCommits;
     cachedHtml = null;
   };
 
   const refreshAll = async () => {
+    if (state.kind !== "ready") return;
     const [newPr, newDiff] = await Promise.all([
       fetchPrInfo(opts.ref),
       fetchPrDiff(opts.ref),
@@ -113,17 +151,13 @@ export async function startServer(
       ".gitattributes",
       newPr.headSha,
     );
-    pr = newPr;
-    diff = newDiff;
-    generatedMatcher = buildGeneratedMatcher(newGitattributes);
+    state.data.pr = newPr;
+    state.data.diff = newDiff;
+    state.data.generatedMatcher = buildGeneratedMatcher(newGitattributes);
     fileLinesCache.clear();
     await refreshReview();
   };
 
-  // Whole-file contents fetched for context expansion. Keyed by `sha:path`.
-  // Files don't change for a given sha, so this cache lives for the session
-  // (cleared on refreshAll, which picks up new commits).
-  const fileLinesCache = new Map<string, string[] | null>();
   const getFileLines = async (
     sha: string,
     filePath: string,
@@ -138,11 +172,12 @@ export async function startServer(
   };
 
   const ensurePendingReview = async (): Promise<string> => {
-    if (review.pendingReview) return review.pendingReview.id;
-    // refreshReview() below overwrites this placeholder with the real data.
-    const id = await createPendingReview(pr.nodeId, "");
-    review = {
-      ...review,
+    const d = state.kind === "ready" ? state.data : null;
+    if (!d) throw new Error("server not ready");
+    if (d.reviewState.pendingReview) return d.reviewState.pendingReview.id;
+    const id = await createPendingReview(d.pr.nodeId, "");
+    d.reviewState = {
+      ...d.reviewState,
       pendingReview: { id, databaseId: 0, body: "" },
     };
     return id;
@@ -159,6 +194,13 @@ export async function startServer(
         return;
       }
 
+      if (req.method === "GET" && path === "/api/ready") {
+        return jsonRes(res, 200, {
+          ready: state.kind === "ready",
+          error: state.kind === "error" ? state.message : undefined,
+        });
+      }
+
       if (req.method === "GET") {
         if (path === prPath || path === filesPath) {
           res.writeHead(200, {
@@ -168,21 +210,25 @@ export async function startServer(
           res.end(renderHtml());
           return;
         }
+        const d = ready(res);
+        if (!d) return;
         if (path === `${prPath}.diff` || path === "/raw.diff") {
           res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-          res.end(diff);
+          res.end(d.diff);
           return;
         }
         if (path === `${prPath}.json` || path === "/pr.json") {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify(pr, null, 2));
+          res.end(JSON.stringify(d.pr, null, 2));
           return;
         }
+        if (path === "/api/auto-merge") {
+          const st = await fetchAutoMerge(opts.ref);
+          return jsonRes(res, 200, st);
+        }
         if (path === "/api/updates") {
-          // Live-poll GitHub for the PR's current head SHA + updated_at.
-          // Client compares against what the page was rendered with.
           const latest = await fetchPrInfo(opts.ref);
-          return json(res, 200, {
+          return jsonRes(res, 200, {
             headSha: latest.headSha,
             updatedAt: latest.updatedAt,
           });
@@ -204,12 +250,12 @@ export async function startServer(
             endParam < startParam ||
             endParam - startParam > 500
           ) {
-            return json(res, 400, { error: "invalid context request" });
+            return jsonRes(res, 400, { error: "invalid context request" });
           }
-          const sha = sideParam === "LEFT" ? pr.baseSha : pr.headSha;
+          const sha = sideParam === "LEFT" ? d.pr.baseSha : d.pr.headSha;
           const lines = await getFileLines(sha, filePath);
           if (lines === null) {
-            return json(res, 404, { error: "file not found at ref" });
+            return jsonRes(res, 404, { error: "file not found at ref" });
           }
           const clampedEnd = Math.min(endParam, lines.length);
           const slice = lines.slice(startParam - 1, clampedEnd);
@@ -227,20 +273,18 @@ export async function startServer(
               );
             })
             .join("");
-          return json(res, 200, {
+          return jsonRes(res, 200, {
             html,
             firstLine: startParam,
             lastLine: startParam + slice.length - 1,
             eof: clampedEnd >= lines.length,
           });
         }
-        if (path === "/api/auto-merge") {
-          const state = await fetchAutoMerge(opts.ref);
-          return json(res, 200, state);
-        }
       }
 
       if (req.method === "POST") {
+        const d = ready(res);
+        if (!d) return;
         if (path === "/api/comment") {
           const body = (await readJson(req)) as {
             path: string;
@@ -254,7 +298,7 @@ export async function startServer(
             (body.side !== "LEFT" && body.side !== "RIGHT") ||
             !body.body?.trim()
           ) {
-            return json(res, 400, { error: "invalid comment payload" });
+            return jsonRes(res, 400, { error: "invalid comment payload" });
           }
           const reviewId = await ensurePendingReview();
           await addPendingThread({
@@ -265,7 +309,7 @@ export async function startServer(
             side: body.side,
           });
           await refreshReview();
-          return json(res, 200, { ok: true });
+          return jsonRes(res, 200, { ok: true });
         }
 
         if (path === "/api/submit") {
@@ -278,37 +322,39 @@ export async function startServer(
             body.event !== "REQUEST_CHANGES" &&
             body.event !== "COMMENT"
           ) {
-            return json(res, 400, { error: "invalid event" });
+            return jsonRes(res, 400, { error: "invalid event" });
           }
           const reviewId = await ensurePendingReview();
           await submitPendingReview(reviewId, body.event, body.body ?? "");
           await refreshReview();
-          return json(res, 200, { ok: true });
+          return jsonRes(res, 200, { ok: true });
         }
 
         if (path === "/api/disable-auto-merge") {
-          await disableAutoMerge(pr.nodeId);
-          const state: AutoMergeState = await fetchAutoMerge(opts.ref);
-          return json(res, 200, state);
+          await disableAutoMerge(d.pr.nodeId);
+          const st: AutoMergeState = await fetchAutoMerge(opts.ref);
+          return jsonRes(res, 200, st);
         }
 
         if (path === "/api/refresh") {
           await refreshAll();
-          return json(res, 200, {
-            headSha: pr.headSha,
-            updatedAt: pr.updatedAt,
+          return jsonRes(res, 200, {
+            headSha: d.pr.headSha,
+            updatedAt: d.pr.updatedAt,
           });
         }
       }
 
       if (req.method === "POST" && path.startsWith("/api/thread/")) {
+        const d = ready(res);
+        if (!d) return;
         const m = path.match(/^\/api\/thread\/([^/]+)\/(resolve|unresolve)$/);
-        if (!m) return json(res, 400, { error: "invalid thread route" });
+        if (!m) return jsonRes(res, 400, { error: "invalid thread route" });
         const nodeId = decodeURIComponent(m[1]);
         if (m[2] === "resolve") await resolveReviewThread(nodeId);
         else await unresolveReviewThread(nodeId);
         await refreshReview();
-        return json(res, 200, { ok: true });
+        return jsonRes(res, 200, { ok: true });
       }
 
       if (
@@ -316,40 +362,44 @@ export async function startServer(
         path.startsWith("/api/comment/") &&
         path.endsWith("/reply")
       ) {
+        const d = ready(res);
+        if (!d) return;
         const idStr = path.slice(
           "/api/comment/".length,
           -"/reply".length,
         );
         const id = Number(idStr);
         if (!Number.isInteger(id) || id <= 0) {
-          return json(res, 400, { error: "invalid comment id" });
+          return jsonRes(res, 400, { error: "invalid comment id" });
         }
         const body = (await readJson(req)) as { body?: string };
         const text = (body?.body ?? "").trim();
-        if (!text) return json(res, 400, { error: "empty body" });
+        if (!text) return jsonRes(res, 400, { error: "empty body" });
         await ensurePendingReview();
         await replyToReviewComment(opts.ref, id, body.body ?? "");
         await refreshReview();
-        return json(res, 200, { ok: true });
+        return jsonRes(res, 200, { ok: true });
       }
 
       if (
         (req.method === "PATCH" || req.method === "DELETE") &&
         path.startsWith("/api/comment/")
       ) {
+        const d = ready(res);
+        if (!d) return;
         const idStr = path.slice("/api/comment/".length);
         const id = Number(idStr);
         if (!Number.isInteger(id) || id <= 0) {
-          return json(res, 400, { error: "invalid comment id" });
+          return jsonRes(res, 400, { error: "invalid comment id" });
         }
-        const target = review.comments.find((c) => c.id === id);
+        const target = d.reviewState.comments.find((c) => c.id === id);
         if (!target || !target.nodeId) {
-          return json(res, 404, { error: "comment not found" });
+          return jsonRes(res, 404, { error: "comment not found" });
         }
         if (req.method === "DELETE") {
           await deleteReviewComment(target.nodeId);
           await refreshReview();
-          return json(res, 200, { ok: true });
+          return jsonRes(res, 200, { ok: true });
         }
         const body = (await readJson(req)) as { body?: string };
         const text = (body?.body ?? "").trim();
@@ -359,14 +409,13 @@ export async function startServer(
           await editReviewComment(target.nodeId, body.body ?? "");
         }
         await refreshReview();
-        return json(res, 200, { ok: true });
+        return jsonRes(res, 200, { ok: true });
       }
 
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("Not found");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // Surface GitHub API errors to the client for debugging.
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: message }));
     }
@@ -394,7 +443,57 @@ export async function startServer(
   });
 }
 
-function json(res: ServerResponse, status: number, body: unknown) {
+function renderLoadingPage(state: State, prPath: string): string {
+  const isError = state.kind === "error";
+  const message = isError ? (state as any).message : "Loading from GitHub…";
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8" />
+<title>${isError ? "Error" : "Loading"} · ghreview</title>
+<style>
+html, body { margin: 0; padding: 0; height: 100%; background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+body { display: flex; align-items: center; justify-content: center; }
+.loading { text-align: center; }
+.spinner { width: 36px; height: 36px; border: 3px solid #30363d; border-top-color: #2f81f7; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.msg { font-size: 14px; color: #8b949e; }
+.err { color: #f85149; max-width: 560px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; text-align: left; background: #161b22; padding: 12px; border-radius: 6px; border: 1px solid #30363d; white-space: pre-wrap; }
+</style>
+</head><body>
+<div class="loading">
+  ${isError ? "" : '<div class="spinner"></div>'}
+  <div class="msg">${isError ? "Error loading PR:" : "Loading PR from GitHub…"}</div>
+  ${isError ? `<pre class="err">${escapeHtml(message)}</pre>` : ""}
+</div>
+<script>
+(function(){
+  if (${isError ? "true" : "false"}) return;
+  const target = ${JSON.stringify(prPath)};
+  const tick = async () => {
+    try {
+      const r = await fetch("/api/ready");
+      const d = await r.json();
+      if (d.ready) location.replace(target);
+      else if (d.error) document.querySelector(".msg").textContent = "Error: " + d.error;
+    } catch {}
+  };
+  setInterval(tick, 500);
+  tick();
+})();
+</script>
+</body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function jsonRes(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }
@@ -404,7 +503,6 @@ function readJson(req: IncomingMessage): Promise<unknown> {
     let buf = "";
     req.on("data", (c) => {
       buf += c.toString();
-      // Cap at ~1 MB to avoid runaway requests.
       if (buf.length > 1_000_000) {
         req.destroy();
         reject(new Error("request body too large"));

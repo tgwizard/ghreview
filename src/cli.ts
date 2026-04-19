@@ -110,62 +110,55 @@ async function main() {
     `Fetching ${ref.owner}/${ref.repo}#${ref.number} via gh…\n`,
   );
 
-  // Only .gitattributes depends on pr.headSha; everything else can run in
-  // parallel with the PR fetch.
-  const [
-    pr,
-    authedUser,
-    reviewState,
-    issueComments,
-    checks,
-    commits,
-    diff,
-  ] = await Promise.all([
-    fetchPrInfo(ref),
-    fetchAuthedUser(),
-    loadReviewState(ref),
-    fetchIssueComments(ref),
-    fetchChecksRollup(ref),
-    fetchPrCommits(ref),
-    fetchPrDiff(ref),
-  ]);
-  const gitattributes = await fetchFileAtRef(
-    ref,
-    ".gitattributes",
-    pr.headSha,
-  );
-  const generatedMatcher = buildGeneratedMatcher(gitattributes);
-
-  const server = await startServer({
-    ref,
-    pr,
-    diff,
-    authedUser,
-    generatedMatcher,
-    initialReviewState: reviewState,
-    initialIssueComments: issueComments,
-    initialChecks: checks,
-    initialCommits: commits,
-    port: args.port,
-  });
-  process.stdout.write(`\n  ${pr.title}\n`);
-  process.stdout.write(
-    `  +${pr.additions} −${pr.deletions} across ${pluralize(pr.changedFiles, "file")}\n`,
-  );
-  if (reviewState.pendingReview) {
-    process.stdout.write(
-      `  pending review with ${pluralize(reviewState.pendingCommentIds.size, "comment")}\n`,
+  // Kick off the fetches in the background and boot the server against the
+  // pending promise. The browser can open immediately and will show a
+  // placeholder that auto-reloads once the data is in.
+  const ready = (async () => {
+    const [pr, authedUser, reviewState, issueComments, checks, commits, diff] =
+      await Promise.all([
+        fetchPrInfo(ref),
+        fetchAuthedUser(),
+        loadReviewState(ref),
+        fetchIssueComments(ref),
+        fetchChecksRollup(ref),
+        fetchPrCommits(ref),
+        fetchPrDiff(ref),
+      ]);
+    const gitattributes = await fetchFileAtRef(
+      ref,
+      ".gitattributes",
+      pr.headSha,
     );
-  }
+    const generatedMatcher = buildGeneratedMatcher(gitattributes);
+    process.stdout.write(`\n  ${pr.title}\n`);
+    process.stdout.write(
+      `  +${pr.additions} −${pr.deletions} across ${pluralize(pr.changedFiles, "file")}\n`,
+    );
+    if (reviewState.pendingReview) {
+      process.stdout.write(
+        `  pending review with ${pluralize(reviewState.pendingCommentIds.size, "comment")}\n`,
+      );
+    }
+    return {
+      pr,
+      diff,
+      authedUser,
+      generatedMatcher,
+      reviewState,
+      issueComments,
+      checks,
+      commits,
+    };
+  })();
+
+  const server = await startServer({ ref, ready, port: args.port });
   process.stdout.write(`\nServing at ${server.prUrl}\n`);
   process.stdout.write(`Press Ctrl+C to stop.\n`);
 
   if (!args.noOpen) {
-    try {
-      await open(server.prUrl);
-    } catch {
+    open(server.prUrl).catch(() => {
       // Non-fatal; URL is still printed.
-    }
+    });
   }
 
   let shuttingDown = false;
