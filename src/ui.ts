@@ -706,8 +706,9 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .row:hover .add-comment-btn, .row:focus-within .add-comment-btn { opacity: 1; }
 .add-comment-btn:hover { filter: brightness(1.1); }
 
-.comment-form-row td { padding: 10px 14px 10px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+.comment-form-row td { padding: 10px 14px 10px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); position: sticky; left: 0; }
+.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: min(720px, calc(100vw - 380px)); box-sizing: border-box; }
+@media (max-width: 900px) { .comment-form { max-width: calc(100vw - 80px); } }
 .comment-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 80px; }
 .comment-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
 .comment-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
