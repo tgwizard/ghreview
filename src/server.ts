@@ -80,9 +80,11 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
         baseUrl,
         prUrl: `${baseUrl}${prPath}`,
         close: () =>
-          new Promise<void>((res, rej) =>
-            server.close((err) => (err ? rej(err) : res())),
-          ),
+          new Promise<void>((res, rej) => {
+            // Drop live keep-alive connections so close() actually returns.
+            server.closeAllConnections();
+            server.close((err) => (err ? rej(err) : res()));
+          }),
       });
     });
   });

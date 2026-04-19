@@ -130,7 +130,16 @@ async function main() {
     }
   }
 
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) {
+      // Second signal: bail out hard.
+      process.exit(130);
+    }
+    shuttingDown = true;
+    // Hard-exit fallback in case something else pins the event loop.
+    const timer = setTimeout(() => process.exit(130), 1500);
+    timer.unref();
     try {
       await server.close();
     } finally {
