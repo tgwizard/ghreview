@@ -431,7 +431,7 @@ function renderChunk(
       const dataAttrs = commentable
         ? ` data-path="${escapeHtml(path)}" data-side="${commentSide}" data-line="${commentLine}"`
         : "";
-      const row = `<tr class="row ${cls}"${dataAttrs}><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}${addBtn}</td><td class="marker">${marker}</td><td class="code">${escapeHtml(content)}</td></tr>`;
+      const row = `<tr class="row ${cls}"${dataAttrs}><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}</td><td class="marker">${marker}${addBtn}</td><td class="code">${escapeHtml(content)}</td></tr>`;
 
       const threads: Thread[] = [];
       const seen = new Set<number>();
@@ -718,9 +718,9 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .row .code { padding: 0 8px; white-space: pre; overflow-wrap: normal; word-break: normal; }
 .empty { padding: 40px; text-align: center; color: var(--text-dim); }
 
-/* Add-comment affordance — shows on row hover */
-.row .ln-new { position: relative; }
-.add-comment-btn { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; padding: 0; line-height: 16px; border-radius: 3px; background: var(--accent); color: white; border: none; font-weight: 700; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity 0.08s; }
+/* Add-comment affordance — sits in the +/- gutter column */
+.row .marker { position: relative; }
+.add-comment-btn { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 18px; height: 18px; padding: 0; line-height: 16px; border-radius: 3px; background: var(--accent); color: white; border: none; font-weight: 700; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity 0.08s; }
 .row:hover .add-comment-btn, .row:focus-within .add-comment-btn { opacity: 1; }
 .add-comment-btn:hover { filter: brightness(1.1); }
 
