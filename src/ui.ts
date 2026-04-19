@@ -261,11 +261,12 @@ function renderFile(
 
   const placedIds = new Set<number>();
   const language = detectLanguage(mPath);
-  // Expansion fetches the new-side file, so it only makes sense for files
-  // that exist on both sides — modified, copied, renamed. Added/deleted
-  // files already show every line that exists on their side.
-  const canExpand = !file.new && !file.deleted && Boolean(file.to);
-  const expandPath = file.to ?? "";
+  // Expansion fetches the new-side file, so it needs a valid file.to.
+  // Deleted files have file.to = /dev/null — skip those. Added files keep
+  // expansion enabled: GitHub caps /pulls/N/files patches at 3MB, so a big
+  // new file may have more content beyond what the diff shows.
+  const expandPath = file.to && file.to !== "/dev/null" ? file.to : "";
+  const canExpand = Boolean(expandPath);
   const chunks = file.chunks
     .map((c, i) => {
       const prev = i > 0 ? file.chunks[i - 1] : null;
@@ -1041,8 +1042,12 @@ const CLIENT_SCRIPT = `
   }
 
   document.addEventListener("click", (ev) => {
-    const t = ev.target;
-    if (!t || !(t instanceof Element)) return;
+    const target = ev.target;
+    if (!(target instanceof Element)) return;
+    // data-action can sit on the TR (expand rows) or on nested elements
+    // (buttons). Walk up so clicking any descendant still fires.
+    const t = target.closest("[data-action]");
+    if (!t) return;
     const act = t.getAttribute("data-action");
     if (act === "add-comment") {
       const row = t.closest("tr.row");
