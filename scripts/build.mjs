@@ -1,5 +1,7 @@
-import { chmodSync } from "node:fs";
+import { chmodSync, readFileSync } from "node:fs";
 import { build } from "esbuild";
+
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 
 // Bundle cli.ts with every runtime dep inlined. The published package ships
 // a self-contained dist/cli.js plus a package.json with "dependencies": {},
@@ -24,6 +26,9 @@ await build({
       '#!/usr/bin/env node\n' +
       'import { createRequire as __ghrCreateRequire } from "node:module";\n' +
       "const require = __ghrCreateRequire(import.meta.url);",
+  },
+  define: {
+    __GHREVIEW_VERSION__: JSON.stringify(pkg.version),
   },
   external: [],
   logLevel: "info",

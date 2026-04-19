@@ -83,8 +83,12 @@ Requires the GitHub CLI (gh) installed and authenticated.
   );
 }
 
+declare const __GHREVIEW_VERSION__: string | undefined;
+
 function printVersion() {
-  process.stdout.write("ghreview 0.0.1\n");
+  const v =
+    typeof __GHREVIEW_VERSION__ !== "undefined" ? __GHREVIEW_VERSION__ : "dev";
+  process.stdout.write(`ghreview ${v}\n`);
 }
 
 async function main() {
