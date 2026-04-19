@@ -667,8 +667,8 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .file-thread-count { color: var(--accent); font-size: 12px; margin-left: 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
 .outdated-threads { border-bottom: 1px solid var(--border); background: var(--bg-elev); padding: 10px 14px; }
 .outdated-threads__header { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
-.thread-row td { padding: 8px 12px 8px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.thread { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 0; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+.thread-row td { padding: 8px 12px 8px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); position: sticky; left: 0; }
+.thread { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 0; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: min(560px, calc(100vw - var(--sidebar-width, 300px) - 120px)); }
 .thread-header { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg-hover); border-radius: 6px 6px 0 0; font-size: 12px; }
 .thread-pill { background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); padding: 1px 8px; border-radius: 999px; font-size: 11px; }
 .thread-pill.outdated { background: rgba(210, 153, 34, 0.15); color: #d29922; border-color: rgba(210, 153, 34, 0.4); }
@@ -722,8 +722,8 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .add-comment-btn:hover { filter: brightness(1.1); }
 
 .comment-form-row td { padding: 10px 14px 10px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); position: sticky; left: 0; }
-.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: min(720px, calc(100vw - var(--sidebar-width, 300px) - 80px)); box-sizing: border-box; }
-@media (max-width: 900px) { .comment-form { max-width: calc(100vw - 80px); } }
+.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: min(560px, calc(100vw - var(--sidebar-width, 300px) - 120px)); box-sizing: border-box; }
+@media (max-width: 900px) { .comment-form, .thread { max-width: calc(100vw - 80px); } }
 .comment-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 80px; }
 .comment-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
 .comment-form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
@@ -740,7 +740,7 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .comment-link-btn:hover { color: var(--text); text-decoration: underline; }
 .comment-link-btn.danger:hover { color: var(--del-fg); }
 .comment-edit-form { margin-top: 4px; }
-.comment-edit-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 60px; max-width: min(720px, calc(100vw - var(--sidebar-width, 300px) - 80px)); }
+.comment-edit-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 60px; }
 .comment-edit-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
 .comment-edit-form-actions { display: flex; gap: 8px; margin-top: 6px; }
 
