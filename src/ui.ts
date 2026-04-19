@@ -261,9 +261,29 @@ function renderFile(
 
   const placedIds = new Set<number>();
   const language = detectLanguage(mPath);
+  // Expansion fetches the new-side file, so it only makes sense for files
+  // that exist on both sides — modified, copied, renamed. Added/deleted
+  // files already show every line that exists on their side.
+  const canExpand = !file.new && !file.deleted && Boolean(file.to);
+  const expandPath = file.to ?? "";
   const chunks = file.chunks
-    .map((c) => renderChunk(c, mPath, placedIds, ctx, language))
+    .map((c, i) => {
+      const prev = i > 0 ? file.chunks[i - 1] : null;
+      const expandUp = canExpand
+        ? renderExpandRow("up", c, prev, expandPath)
+        : "";
+      return expandUp + renderChunk(c, mPath, placedIds, ctx, language);
+    })
     .join("");
+  const expandDown =
+    canExpand && file.chunks.length > 0
+      ? renderExpandRow(
+          "down",
+          file.chunks[file.chunks.length - 1],
+          null,
+          expandPath,
+        )
+      : "";
 
   const unplaced = threadsForFile.filter((t) => !placedIds.has(t.id));
   const unplacedBlock =
@@ -277,7 +297,7 @@ function renderFile(
   const diffBody =
     file.chunks.length === 0
       ? '<div class="file-empty">(no textual diff)</div>'
-      : `<div class="diff">${chunks}</div>`;
+      : `<div class="diff">${chunks}${expandDown}</div>`;
   const body = `${unplacedBlock}${diffBody}`;
 
   const threadCount = threadsForFile.length;
@@ -473,6 +493,43 @@ function matchablePath(file: parseDiff.File): string {
   const to = file.to && file.to !== "/dev/null" ? file.to : "";
   const from = file.from && file.from !== "/dev/null" ? file.from : "";
   return to || from || "";
+}
+
+// Shared renderer for context-only rows — used for the unchanged lines
+// loaded on-demand by the "expand context" buttons. Shape must match the
+// ctx rows emitted by renderChunk so downstream client behavior (add
+// comment, scroll-to, thread anchoring) works identically.
+export function renderContextRow(
+  newLine: number,
+  oldLine: number,
+  content: string,
+  path: string,
+  language: string | null,
+): string {
+  const codeHtml = highlightLine(content, language);
+  return `<tr class="row ctx expanded" data-path="${escapeHtml(path)}" data-side="RIGHT" data-line="${newLine}"><td class="ln ln-old">${oldLine}</td><td class="ln ln-new">${newLine}</td><td class="marker"> <button type="button" class="add-comment-btn" data-action="add-comment" aria-label="Comment on line ${newLine}">+</button></td><td class="code hljs">${codeHtml}</td></tr>`;
+}
+
+function renderExpandRow(
+  direction: "up" | "down",
+  chunk: parseDiff.Chunk,
+  prevChunk: parseDiff.Chunk | null,
+  path: string,
+): string {
+  if (direction === "up") {
+    const endNew = chunk.newStart - 1;
+    const prevEnd = prevChunk
+      ? prevChunk.newStart + prevChunk.newLines - 1
+      : 0;
+    const capStart = prevEnd + 1;
+    if (endNew < capStart) return ""; // No gap above this hunk.
+    const delta = chunk.newStart - chunk.oldStart;
+    return `<table class="chunk expand-chunk"><tbody><tr class="expand-row" data-action="expand-context" data-direction="up" data-path="${escapeHtml(path)}" data-side="RIGHT" data-delta="${delta}" data-end-new="${endNew}" data-cap-start="${capStart}"><td colspan="4"><span class="expand-label">↑ Load 100 more lines</span></td></tr></tbody></table>`;
+  }
+  const startNew = chunk.newStart + chunk.newLines;
+  const endOldExclusive = chunk.oldStart + chunk.oldLines;
+  const delta = startNew - endOldExclusive;
+  return `<table class="chunk expand-chunk"><tbody><tr class="expand-row" data-action="expand-context" data-direction="down" data-path="${escapeHtml(path)}" data-side="RIGHT" data-delta="${delta}" data-start-new="${startNew}"><td colspan="4"><span class="expand-label">↓ Load 100 more lines</span></td></tr></tbody></table>`;
 }
 
 function renderChunk(
@@ -769,6 +826,12 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .chunk { border-collapse: collapse; width: 100%; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }
 .chunk + .chunk { border-top: 1px solid var(--border); }
 .hunk-header td { background: var(--hunk-bg); color: var(--hunk-fg); padding: 4px 12px; font-size: 12px; }
+.expand-chunk { border-top: 1px solid var(--border); }
+.expand-row td { background: var(--bg-elev); color: var(--text-dim); text-align: center; padding: 4px 0; cursor: pointer; user-select: none; font-size: 11px; border-bottom: 1px solid var(--border); }
+.expand-row:hover td { background: var(--bg-hover); color: var(--accent); }
+.expand-row.loading td { cursor: default; color: var(--text-dim); }
+.expand-row.loading .expand-label::after { content: "…"; }
+.row.ctx.expanded { background: rgba(255,255,255,0.02); }
 .row td { padding: 0; vertical-align: top; }
 .row.add { background: var(--add-bg); }
 .row.del { background: var(--del-bg); }
@@ -1006,8 +1069,60 @@ const CLIENT_SCRIPT = `
       if (id) goToComment(id);
     } else if (act === "refresh") {
       doRefresh();
+    } else if (act === "expand-context") {
+      const row = t.closest("tr.expand-row");
+      if (row) expandContext(row);
     }
   });
+
+  async function expandContext(row) {
+    if (row.classList.contains("loading")) return;
+    const direction = row.dataset.direction;
+    const path = row.dataset.path;
+    const side = row.dataset.side;
+    const delta = Number(row.dataset.delta);
+    let start, end;
+    if (direction === "up") {
+      const cap = Number(row.dataset.capStart);
+      end = Number(row.dataset.endNew);
+      start = Math.max(cap, end - 99);
+      if (start > end) { row.remove(); return; }
+    } else {
+      start = Number(row.dataset.startNew);
+      end = start + 99;
+    }
+    row.classList.add("loading");
+    try {
+      const qs = new URLSearchParams({
+        path, side, start: String(start), end: String(end), delta: String(delta),
+      });
+      const r = await fetch("/api/context?" + qs.toString());
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
+      if (data.html) {
+        if (direction === "up") {
+          // New rows go BELOW the expand button so the oldest loaded line
+          // is adjacent to the hunk header.
+          row.insertAdjacentHTML("afterend", data.html);
+        } else {
+          row.insertAdjacentHTML("beforebegin", data.html);
+        }
+      }
+      if (direction === "up") {
+        const cap = Number(row.dataset.capStart);
+        const nextEnd = data.firstLine - 1;
+        if (nextEnd < cap) row.remove();
+        else row.dataset.endNew = String(nextEnd);
+      } else {
+        if (data.eof) row.remove();
+        else row.dataset.startNew = String(data.lastLine + 1);
+      }
+    } catch (err) {
+      console.error("expand-context failed:", err);
+    } finally {
+      row.classList.remove("loading");
+    }
+  }
 
   // --- Refresh + freshness polling ---
   const refreshBtn = document.querySelector(".refresh-btn");

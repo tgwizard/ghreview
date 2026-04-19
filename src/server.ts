@@ -21,8 +21,9 @@ import {
   type ReviewState,
 } from "./gh.js";
 import { buildGeneratedMatcher, type GeneratedMatcher } from "./gitattributes.js";
+import { detectLanguage } from "./highlight.js";
 import { buildThreadIndex } from "./threads.js";
-import { renderPage } from "./ui.js";
+import { renderContextRow, renderPage } from "./ui.js";
 
 export interface ServerOptions {
   ref: PrRef;
@@ -88,7 +89,25 @@ export async function startServer(
     pr = newPr;
     diff = newDiff;
     generatedMatcher = buildGeneratedMatcher(newGitattributes);
+    fileLinesCache.clear();
     await refreshReview();
+  };
+
+  // Whole-file contents fetched for context expansion. Keyed by `sha:path`.
+  // Files don't change for a given sha, so this cache lives for the session
+  // (cleared on refreshAll, which picks up new commits).
+  const fileLinesCache = new Map<string, string[] | null>();
+  const getFileLines = async (
+    sha: string,
+    filePath: string,
+  ): Promise<string[] | null> => {
+    const key = `${sha}:${filePath}`;
+    const hit = fileLinesCache.get(key);
+    if (hit !== undefined) return hit;
+    const raw = await fetchFileAtRef(opts.ref, filePath, sha);
+    const lines = raw === null ? null : raw.split("\n");
+    fileLinesCache.set(key, lines);
+    return lines;
   };
 
   const ensurePendingReview = async (): Promise<string> => {
@@ -139,6 +158,53 @@ export async function startServer(
           return json(res, 200, {
             headSha: latest.headSha,
             updatedAt: latest.updatedAt,
+          });
+        }
+
+        if (path === "/api/context") {
+          const filePath = url.searchParams.get("path");
+          const sideParam = url.searchParams.get("side");
+          const startParam = Number(url.searchParams.get("start"));
+          const endParam = Number(url.searchParams.get("end"));
+          const deltaParam = Number(url.searchParams.get("delta"));
+          if (
+            !filePath ||
+            (sideParam !== "LEFT" && sideParam !== "RIGHT") ||
+            !Number.isInteger(startParam) ||
+            !Number.isInteger(endParam) ||
+            !Number.isInteger(deltaParam) ||
+            startParam < 1 ||
+            endParam < startParam ||
+            endParam - startParam > 500
+          ) {
+            return json(res, 400, { error: "invalid context request" });
+          }
+          const sha = sideParam === "LEFT" ? pr.baseSha : pr.headSha;
+          const lines = await getFileLines(sha, filePath);
+          if (lines === null) {
+            return json(res, 404, { error: "file not found at ref" });
+          }
+          const clampedEnd = Math.min(endParam, lines.length);
+          const slice = lines.slice(startParam - 1, clampedEnd);
+          const language = detectLanguage(filePath);
+          const html = slice
+            .map((content, i) => {
+              const newLine = startParam + i;
+              const oldLine = newLine - deltaParam;
+              return renderContextRow(
+                newLine,
+                oldLine,
+                content,
+                filePath,
+                language,
+              );
+            })
+            .join("");
+          return json(res, 200, {
+            html,
+            firstLine: startParam,
+            lastLine: startParam + slice.length - 1,
+            eof: clampedEnd >= lines.length,
           });
         }
         if (path === "/api/auto-merge") {
