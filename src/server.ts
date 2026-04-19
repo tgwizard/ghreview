@@ -3,8 +3,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   addPendingThread,
   createPendingReview,
+  deleteReviewComment,
   disableAutoMerge,
+  editReviewComment,
   fetchAutoMerge,
+  fetchCommentsForReview,
   fetchPendingReview,
   fetchReviewComments,
   submitPendingReview,
@@ -64,11 +67,17 @@ export async function startServer(
   };
 
   const refreshReview = async () => {
-    const [fresh, pending] = await Promise.all([
+    const [submitted, pending] = await Promise.all([
       fetchReviewComments(opts.ref),
       fetchPendingReview(opts.ref),
     ]);
-    comments = fresh;
+    const pendingCmts = pending
+      ? await fetchCommentsForReview(opts.ref, pending.databaseId)
+      : [];
+    const byId = new Map<number, ReviewComment>();
+    for (const c of submitted) byId.set(c.id, c);
+    for (const c of pendingCmts) byId.set(c.id, c);
+    comments = Array.from(byId.values());
     pendingReview = pending;
     cachedHtml = null;
   };
@@ -167,6 +176,31 @@ export async function startServer(
           const state: AutoMergeState = await fetchAutoMerge(opts.ref);
           return json(res, 200, state);
         }
+      }
+
+      if (
+        (req.method === "PATCH" || req.method === "DELETE") &&
+        path.startsWith("/api/comment/")
+      ) {
+        const idStr = path.slice("/api/comment/".length);
+        const id = Number(idStr);
+        if (!Number.isInteger(id) || id <= 0) {
+          return json(res, 400, { error: "invalid comment id" });
+        }
+        if (req.method === "DELETE") {
+          await deleteReviewComment(opts.ref, id);
+          await refreshReview();
+          return json(res, 200, { ok: true });
+        }
+        const body = (await readJson(req)) as { body?: string };
+        const text = (body?.body ?? "").trim();
+        if (text === "") {
+          await deleteReviewComment(opts.ref, id);
+        } else {
+          await editReviewComment(opts.ref, id, body.body ?? "");
+        }
+        await refreshReview();
+        return json(res, 200, { ok: true });
       }
 
       res.writeHead(404, { "content-type": "text/plain" });

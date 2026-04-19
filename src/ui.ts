@@ -129,6 +129,7 @@ export function renderPage(
   <aside class="sidebar">
     <div class="sidebar-header">Files changed (${files.length})</div>
     <nav class="file-tree">${fileTree}</nav>
+    <div class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
   </aside>
   <main class="content">
     ${generatedBanner}
@@ -509,7 +510,13 @@ function renderComment(c: ReviewComment, ctx: RenderContext): string {
   const pendingPill = isPending
     ? ' <span class="comment-pending-pill">Pending</span>'
     : "";
-  return `<article class="comment${isPending ? " is-pending" : ""}">
+  const actions = isPending
+    ? `<div class="comment-actions">
+         <button type="button" class="comment-link-btn" data-action="edit-comment">Edit</button>
+         <button type="button" class="comment-link-btn danger" data-action="delete-comment">Delete</button>
+       </div>`
+    : "";
+  return `<article class="comment${isPending ? " is-pending" : ""}" data-comment-id="${c.id}" data-raw-body="${escapeHtml(c.body)}">
     ${avatarImg(c.userAvatarUrl, "comment-avatar")}
     <div class="comment-body">
       <div class="comment-meta">
@@ -518,6 +525,7 @@ function renderComment(c: ReviewComment, ctx: RenderContext): string {
         ${edited}
       </div>
       <div class="comment-md">${renderMarkdown(c.body)}</div>
+      ${actions}
     </div>
   </article>`;
 }
@@ -608,8 +616,12 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .pr-meta .sep { color: var(--border); }
 .add { color: var(--add-fg); }
 .del { color: var(--del-fg); }
-.layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 80px); }
+.layout { display: grid; grid-template-columns: var(--sidebar-width, 300px) 1fr; min-height: calc(100vh - 80px); }
 .sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); overflow-y: auto; position: sticky; top: 80px; height: calc(100vh - 80px); }
+.sidebar-resize-handle { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 20; }
+.sidebar-resize-handle:hover, .sidebar-resize-handle.dragging { background: var(--accent); opacity: 0.35; }
+body.sidebar-resizing { user-select: none; cursor: col-resize; }
+body.sidebar-resizing * { cursor: col-resize !important; }
 .sidebar-header { padding: 12px 16px; font-weight: 600; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
 .file-tree { padding: 6px 0; }
 .file-tree ul { list-style: none; margin: 0; padding: 0; }
@@ -628,7 +640,10 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .tree-rename { color: var(--accent); font-size: 10px; margin-left: 2px; }
 .fn-stats { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .content { padding: 16px 24px; max-width: 100%; overflow-x: hidden; }
-.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 24px; overflow: hidden; background: var(--bg-elev); }
+.file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 24px; background: var(--bg-elev); }
+.file > *:first-child { border-top-left-radius: 6px; border-top-right-radius: 6px; }
+.file > *:last-child { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
+.file .diff { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
 .file-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 80px; z-index: 5; }
 .file-path { display: flex; gap: 10px; align-items: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .file-stats { font-family: ui-monospace, Menlo, monospace; font-size: 12px; display: flex; gap: 8px; }
@@ -707,7 +722,7 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .add-comment-btn:hover { filter: brightness(1.1); }
 
 .comment-form-row td { padding: 10px 14px 10px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); position: sticky; left: 0; }
-.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: min(720px, calc(100vw - 380px)); box-sizing: border-box; }
+.comment-form { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; max-width: min(720px, calc(100vw - var(--sidebar-width, 300px) - 80px)); box-sizing: border-box; }
 @media (max-width: 900px) { .comment-form { max-width: calc(100vw - 80px); } }
 .comment-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 80px; }
 .comment-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
@@ -720,6 +735,14 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .thread.has-pending { border-color: #d29922; }
 .comment.is-pending { background: rgba(210, 153, 34, 0.06); }
 .comment-pending-pill { background: rgba(210, 153, 34, 0.15); color: #d29922; border: 1px solid rgba(210, 153, 34, 0.4); padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.comment-actions { display: flex; gap: 12px; margin-top: 6px; }
+.comment-link-btn { background: none; border: none; color: var(--text-dim); font-size: 11px; padding: 0; cursor: pointer; font-family: inherit; }
+.comment-link-btn:hover { color: var(--text); text-decoration: underline; }
+.comment-link-btn.danger:hover { color: var(--del-fg); }
+.comment-edit-form { margin-top: 4px; }
+.comment-edit-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; min-height: 60px; max-width: min(720px, calc(100vw - var(--sidebar-width, 300px) - 80px)); }
+.comment-edit-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+.comment-edit-form-actions { display: flex; gap: 8px; margin-top: 6px; }
 
 /* Buttons */
 .btn { background: var(--bg-hover); color: var(--text); border: 1px solid var(--border); padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; }
@@ -802,6 +825,13 @@ const CLIENT_SCRIPT = `
     const ta = tr.querySelector("textarea");
     ta.focus();
 
+    ta.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
     form.addEventListener("submit", async (ev) => {
       ev.preventDefault();
       const body = ta.value.trim();
@@ -853,8 +883,94 @@ const CLIENT_SCRIPT = `
       submitReview();
     } else if (act === "disable-auto-merge") {
       disableAutoMerge();
+    } else if (act === "edit-comment") {
+      const article = t.closest("article.comment");
+      if (article) openEditForm(article);
+    } else if (act === "delete-comment") {
+      const article = t.closest("article.comment");
+      if (article) deleteComment(article);
     }
   });
+
+  function openEditForm(article) {
+    const md = article.querySelector(".comment-md");
+    const actions = article.querySelector(".comment-actions");
+    if (!md || md.dataset.editing === "1") return;
+    md.dataset.editing = "1";
+    const raw = article.dataset.rawBody || "";
+    const originalMd = md.innerHTML;
+    md.innerHTML =
+      '<form class="comment-edit-form">' +
+        '<textarea></textarea>' +
+        '<div class="comment-form-error"></div>' +
+        '<div class="comment-edit-form-actions">' +
+          '<button type="button" class="btn" data-action="cancel-edit">Cancel</button>' +
+          '<button type="submit" class="btn primary">Save</button>' +
+        '</div>' +
+      '</form>';
+    const ta = md.querySelector("textarea");
+    ta.value = raw;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    if (actions) actions.style.display = "none";
+
+    const form = md.querySelector("form");
+    const errEl = md.querySelector(".comment-form-error");
+    ta.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    form.addEventListener("click", (ev) => {
+      if (ev.target && ev.target.dataset && ev.target.dataset.action === "cancel-edit") {
+        md.innerHTML = originalMd;
+        delete md.dataset.editing;
+        if (actions) actions.style.display = "";
+      }
+    });
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const id = article.dataset.commentId;
+      const submitBtn = form.querySelector(".btn.primary");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Saving…";
+      errEl.classList.remove("visible");
+      try {
+        await fetch("/api/comment/" + encodeURIComponent(id), {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ body: ta.value }),
+        }).then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+        });
+        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+        location.reload();
+      } catch (err) {
+        errEl.textContent = String((err && err.message) || err);
+        errEl.classList.add("visible");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Save";
+      }
+    });
+  }
+
+  async function deleteComment(article) {
+    if (!confirm("Delete this comment?")) return;
+    const id = article.dataset.commentId;
+    try {
+      const r = await fetch("/api/comment/" + encodeURIComponent(id), {
+        method: "DELETE",
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+      location.reload();
+    } catch (err) {
+      alert("Delete failed: " + String((err && err.message) || err));
+    }
+  }
 
   // Restore scroll after page reload.
   const saved = sessionStorage.getItem("ghreview:scrollY");
@@ -862,6 +978,68 @@ const CLIENT_SCRIPT = `
     sessionStorage.removeItem("ghreview:scrollY");
     window.scrollTo(0, Number(saved));
   }
+
+  // --- Sidebar resize ---
+  (function initSidebarResize(){
+    const MIN = 200, MAX = 900;
+    const saved = Number(localStorage.getItem("ghreview:sidebarWidth"));
+    if (saved >= MIN && saved <= MAX) {
+      document.documentElement.style.setProperty("--sidebar-width", saved + "px");
+    }
+    const handle = $(".sidebar-resize-handle");
+    if (!handle) return;
+    let startX = 0, startWidth = 0;
+
+    function onMove(e) {
+      const dx = e.clientX - startX;
+      const w = Math.min(MAX, Math.max(MIN, startWidth + dx));
+      document.documentElement.style.setProperty("--sidebar-width", w + "px");
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("sidebar-resizing");
+      handle.classList.remove("dragging");
+      const w = getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width").trim();
+      const num = parseInt(w, 10);
+      if (num >= MIN && num <= MAX) {
+        localStorage.setItem("ghreview:sidebarWidth", String(num));
+      }
+    }
+
+    handle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const sidebar = document.querySelector(".sidebar");
+      startX = e.clientX;
+      startWidth = sidebar ? sidebar.getBoundingClientRect().width : 300;
+      document.body.classList.add("sidebar-resizing");
+      handle.classList.add("dragging");
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+
+    // Keyboard support for accessibility.
+    handle.addEventListener("keydown", (e) => {
+      const current = parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width") || "300",
+        10,
+      );
+      let next = current;
+      if (e.key === "ArrowLeft") next = current - 20;
+      else if (e.key === "ArrowRight") next = current + 20;
+      else return;
+      e.preventDefault();
+      next = Math.min(MAX, Math.max(MIN, next));
+      document.documentElement.style.setProperty("--sidebar-width", next + "px");
+      localStorage.setItem("ghreview:sidebarWidth", String(next));
+    });
+
+    // Double-click resets to default.
+    handle.addEventListener("dblclick", () => {
+      document.documentElement.style.removeProperty("--sidebar-width");
+      localStorage.removeItem("ghreview:sidebarWidth");
+    });
+  })();
 
   // --- Submit modal + auto-merge ---
   const modal = $("#submit-modal");
@@ -884,6 +1062,14 @@ const CLIENT_SCRIPT = `
 
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && !modal.hidden) closeSubmitModal();
+    if (
+      !modal.hidden &&
+      (ev.metaKey || ev.ctrlKey) &&
+      ev.key === "Enter"
+    ) {
+      ev.preventDefault();
+      submitReview();
+    }
   });
 
   function renderAutoMerge(state) {

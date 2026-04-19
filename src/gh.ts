@@ -157,7 +157,52 @@ export async function fetchReviewComments(
     "--paginate",
     `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100`,
   ]);
-  return arr.map((c) => ({
+  return arr.map(mapReviewComment);
+}
+
+export async function fetchCommentsForReview(
+  ref: PrRef,
+  reviewDatabaseId: number,
+): Promise<ReviewComment[]> {
+  // /pulls/{n}/comments may omit the viewer's own pending comments; this
+  // endpoint is scoped to a single review (including PENDING) and returns
+  // the full comment objects.
+  const arr = await ghApiJson<any[]>([
+    "--paginate",
+    `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews/${reviewDatabaseId}/comments?per_page=100`,
+  ]);
+  return arr.map(mapReviewComment);
+}
+
+export async function editReviewComment(
+  ref: PrRef,
+  commentId: number,
+  body: string,
+): Promise<void> {
+  await runGh([
+    "api",
+    "-X",
+    "PATCH",
+    "-f",
+    `body=${body}`,
+    `/repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
+  ]);
+}
+
+export async function deleteReviewComment(
+  ref: PrRef,
+  commentId: number,
+): Promise<void> {
+  await runGh([
+    "api",
+    "-X",
+    "DELETE",
+    `/repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
+  ]);
+}
+
+function mapReviewComment(c: any): ReviewComment {
+  return {
     id: c.id,
     inReplyToId: c.in_reply_to_id ?? null,
     pullRequestReviewId: c.pull_request_review_id ?? null,
@@ -172,7 +217,7 @@ export async function fetchReviewComments(
     side: normalizeSide(c.side),
     originalLine: c.original_line ?? null,
     originalSide: normalizeSide(c.original_side),
-  }));
+  };
 }
 
 function normalizeSide(v: unknown): DiffSide | null {

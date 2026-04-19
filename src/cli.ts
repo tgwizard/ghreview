@@ -2,6 +2,7 @@
 import open from "open";
 import {
   fetchAuthedUser,
+  fetchCommentsForReview,
   fetchFileAtRef,
   fetchPendingReview,
   fetchPrDiff,
@@ -105,7 +106,7 @@ async function main() {
   );
 
   // Only .gitattributes needs pr.headSha — everything else runs in parallel.
-  const [pr, authedUser, reviewComments, pendingReview, diff] =
+  const [pr, authedUser, submittedComments, pendingReview, diff] =
     await Promise.all([
       fetchPrInfo(ref),
       fetchAuthedUser(),
@@ -113,12 +114,17 @@ async function main() {
       fetchPendingReview(ref),
       fetchPrDiff(ref),
     ]);
-  const gitattributes = await fetchFileAtRef(
-    ref,
-    ".gitattributes",
-    pr.headSha,
-  );
+  const [gitattributes, pendingComments] = await Promise.all([
+    fetchFileAtRef(ref, ".gitattributes", pr.headSha),
+    pendingReview
+      ? fetchCommentsForReview(ref, pendingReview.databaseId)
+      : Promise.resolve([]),
+  ]);
   const generatedMatcher = buildGeneratedMatcher(gitattributes);
+  const byId = new Map<number, (typeof submittedComments)[number]>();
+  for (const c of submittedComments) byId.set(c.id, c);
+  for (const c of pendingComments) byId.set(c.id, c);
+  const initialReviewComments = Array.from(byId.values());
 
   const server = await startServer({
     ref,
@@ -126,7 +132,7 @@ async function main() {
     diff,
     authedUser,
     generatedMatcher,
-    initialReviewComments: reviewComments,
+    initialReviewComments,
     initialPendingReview: pendingReview,
     port: args.port,
   });
