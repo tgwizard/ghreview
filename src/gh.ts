@@ -155,7 +155,6 @@ export interface ReviewComment {
 export async function fetchReviewComments(
   ref: PrRef,
 ): Promise<ReviewComment[]> {
-  // --paginate concatenates JSON arrays across pages into a single array.
   const arr = await ghApiJson<any[]>([
     "--paginate",
     `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100`,
@@ -274,7 +273,6 @@ export interface PendingReview {
   id: string; // GraphQL node ID
   databaseId: number; // REST integer id
   body: string;
-  commentIds: number[]; // databaseId of each comment in this pending review
 }
 
 export async function fetchPendingReview(
@@ -285,11 +283,7 @@ export async function fetchPendingReview(
       repository(owner:$owner,name:$repo){
         pullRequest(number:$num){
           reviews(first:20,states:[PENDING]){
-            nodes{
-              id databaseId body
-              author{ login }
-              comments(first:100){ nodes{ databaseId } }
-            }
+            nodes{ id databaseId body author{ login } }
           }
         }
       }
@@ -309,11 +303,34 @@ export async function fetchPendingReview(
       id: mine.id,
       databaseId: mine.databaseId,
       body: mine.body ?? "",
-      commentIds: (mine.comments?.nodes ?? []).map((c: any) => c.databaseId),
     };
   } catch {
     return null;
   }
+}
+
+export interface ReviewState {
+  comments: ReviewComment[];
+  pendingReview: PendingReview | null;
+  pendingCommentIds: Set<number>;
+}
+
+export async function loadReviewState(ref: PrRef): Promise<ReviewState> {
+  const [submitted, pendingReview] = await Promise.all([
+    fetchReviewComments(ref),
+    fetchPendingReview(ref),
+  ]);
+  const pendingComments = pendingReview
+    ? await fetchCommentsForReview(ref, pendingReview.databaseId)
+    : [];
+  const byId = new Map<number, ReviewComment>();
+  for (const c of submitted) byId.set(c.id, c);
+  for (const c of pendingComments) byId.set(c.id, c);
+  return {
+    comments: Array.from(byId.values()),
+    pendingReview,
+    pendingCommentIds: new Set(pendingComments.map((c) => c.id)),
+  };
 }
 
 export interface AutoMergeState {
@@ -434,10 +451,12 @@ async function gqlQuery<T>(
 function runGh(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("gh", args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (c) => (stdout += c.toString()));
-    child.stderr.on("data", (c) => (stderr += c.toString()));
+    // Buffer chunks and concat once at the end so multi-MB diffs don't pay
+    // quadratic string-reallocation cost.
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
+    child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
     child.on("error", (err) => {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         reject(
@@ -450,13 +469,14 @@ function runGh(args: string[]): Promise<string> {
       }
     });
     child.on("close", (code) => {
-      if (code === 0) resolve(stdout);
-      else
+      if (code === 0) {
+        resolve(Buffer.concat(stdoutChunks).toString("utf8"));
+      } else {
+        const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
         reject(
-          new Error(
-            `gh ${args.join(" ")} exited with code ${code}\n${stderr.trim()}`,
-          ),
+          new Error(`gh ${args.join(" ")} exited with code ${code}\n${stderr}`),
         );
+      }
     });
   });
 }

@@ -7,21 +7,18 @@ import {
   disableAutoMerge,
   editReviewComment,
   fetchAutoMerge,
-  fetchCommentsForReview,
   fetchFileAtRef,
-  fetchPendingReview,
   fetchPrDiff,
   fetchPrInfo,
-  fetchReviewComments,
+  loadReviewState,
   replyToReviewComment,
   submitPendingReview,
   type AuthedUser,
   type AutoMergeState,
   type DiffSide,
-  type PendingReview,
   type PrInfo,
   type PrRef,
-  type ReviewComment,
+  type ReviewState,
 } from "./gh.js";
 import { buildGeneratedMatcher, type GeneratedMatcher } from "./gitattributes.js";
 import { buildThreadIndex } from "./threads.js";
@@ -33,8 +30,7 @@ export interface ServerOptions {
   diff: string;
   authedUser: AuthedUser | null;
   generatedMatcher: GeneratedMatcher;
-  initialReviewComments: ReviewComment[];
-  initialPendingReview: PendingReview | null;
+  initialReviewState: ReviewState;
   port?: number;
 }
 
@@ -53,43 +49,32 @@ export async function startServer(
   let pr = opts.pr;
   let diff = opts.diff;
   let generatedMatcher = opts.generatedMatcher;
-  let comments = opts.initialReviewComments;
-  let pendingReview = opts.initialPendingReview;
+  let review = opts.initialReviewState;
   let cachedHtml: string | null = null;
 
   const renderHtml = () => {
     if (cachedHtml) return cachedHtml;
-    const pendingIds = new Set(pendingReview?.commentIds ?? []);
-    const threadIndex = buildThreadIndex(comments, pendingIds);
+    const threadIndex = buildThreadIndex(
+      review.comments,
+      review.pendingCommentIds,
+    );
     cachedHtml = renderPage(
       pr,
       diff,
       generatedMatcher,
       opts.authedUser,
       threadIndex,
-      pendingReview,
+      review.pendingReview,
+      review.pendingCommentIds,
     );
     return cachedHtml;
   };
 
   const refreshReview = async () => {
-    const [submitted, pending] = await Promise.all([
-      fetchReviewComments(opts.ref),
-      fetchPendingReview(opts.ref),
-    ]);
-    const pendingCmts = pending
-      ? await fetchCommentsForReview(opts.ref, pending.databaseId)
-      : [];
-    const byId = new Map<number, ReviewComment>();
-    for (const c of submitted) byId.set(c.id, c);
-    for (const c of pendingCmts) byId.set(c.id, c);
-    comments = Array.from(byId.values());
-    pendingReview = pending;
+    review = await loadReviewState(opts.ref);
     cachedHtml = null;
   };
 
-  // Re-fetch everything (PR info, diff, .gitattributes, review state).
-  // Called when the user hits Refresh or we detect new commits upstream.
   const refreshAll = async () => {
     const [newPr, newDiff] = await Promise.all([
       fetchPrInfo(opts.ref),
@@ -107,9 +92,13 @@ export async function startServer(
   };
 
   const ensurePendingReview = async (): Promise<string> => {
-    if (pendingReview) return pendingReview.id;
+    if (review.pendingReview) return review.pendingReview.id;
+    // refreshReview() below overwrites this placeholder with the real data.
     const id = await createPendingReview(pr.nodeId, "");
-    pendingReview = { id, databaseId: 0, body: "", commentIds: [] };
+    review = {
+      ...review,
+      pendingReview: { id, databaseId: 0, body: "" },
+    };
     return id;
   };
 
@@ -235,7 +224,6 @@ export async function startServer(
         const body = (await readJson(req)) as { body?: string };
         const text = (body?.body ?? "").trim();
         if (!text) return json(res, 400, { error: "empty body" });
-        // Ensure pending review exists so the reply attaches to it.
         await ensurePendingReview();
         await replyToReviewComment(opts.ref, id, body.body ?? "");
         await refreshReview();
@@ -251,7 +239,7 @@ export async function startServer(
         if (!Number.isInteger(id) || id <= 0) {
           return json(res, 400, { error: "invalid comment id" });
         }
-        const target = comments.find((c) => c.id === id);
+        const target = review.comments.find((c) => c.id === id);
         if (!target || !target.nodeId) {
           return json(res, 404, { error: "comment not found" });
         }

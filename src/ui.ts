@@ -8,6 +8,7 @@ import type {
 } from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
 import { detectLanguage, highlightLine } from "./highlight.js";
+import { escapeHtml, pluralize } from "./html.js";
 import { renderMarkdown } from "./markdown.js";
 import type { Thread, ThreadIndex } from "./threads.js";
 
@@ -46,6 +47,7 @@ export function renderPage(
   authedUser: AuthedUser | null = null,
   threadIndex: ThreadIndex = EMPTY_INDEX,
   pendingReview: PendingReview | null = null,
+  pendingCommentIds: Set<number> = new Set(),
 ): string {
   const files = parseDiff(rawDiff);
   const fileInfos = files.map((f, i) => {
@@ -66,7 +68,6 @@ export function renderPage(
     threadsByFile.set(t.path, list);
   }
 
-  const pendingCommentIds = new Set(pendingReview?.commentIds ?? []);
   const pendingCount = pendingCommentIds.size;
   const ctx: RenderContext = {
     prUrl: pr.url,
@@ -93,7 +94,7 @@ export function renderPage(
 
   const generatedBanner =
     generatedCount > 0
-      ? `<div class="gen-banner">${generatedCount} generated file${generatedCount === 1 ? "" : "s"} hidden by default (based on <code>.gitattributes</code>). Click a file header to expand.</div>`
+      ? `<div class="gen-banner">${pluralize(generatedCount, "generated file")} hidden by default (based on <code>.gitattributes</code>). Click a file header to expand.</div>`
       : "";
 
   return `<!doctype html>
@@ -223,7 +224,7 @@ function renderSubmitModal(
     </div>
     <div class="modal-body">
       <div class="modal-status">
-        <span class="modal-pending-count">${pendingCount} pending comment${pendingCount === 1 ? "" : "s"}</span>
+        <span class="modal-pending-count">${pluralize(pendingCount, "pending comment")}</span>
       </div>
       ${renderPendingCommentList(pendingItems)}
       <label class="modal-label" for="submit-review-body">Overall review</label>
@@ -268,7 +269,7 @@ function renderFile(
   const unplacedBlock =
     unplaced.length > 0
       ? `<div class="outdated-threads">
-        <div class="outdated-threads__header">${unplaced.length} outdated thread${unplaced.length === 1 ? "" : "s"} on this file</div>
+        <div class="outdated-threads__header">${pluralize(unplaced.length, "outdated thread")} on this file</div>
         ${unplaced.map((t) => renderThread(t, ctx)).join("")}
       </div>`
       : "";
@@ -282,7 +283,7 @@ function renderFile(
   const threadCount = threadsForFile.length;
   const threadBadge =
     threadCount > 0
-      ? `<span class="file-thread-count" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span>`
+      ? `<span class="file-thread-count" title="${pluralize(threadCount, "thread")}">💬 ${threadCount}</span>`
       : "";
 
   const header = `<div class="file-header">
@@ -420,7 +421,7 @@ function renderTreeFile(
   const threadCount = threadsByFile.get(info.matchPath)?.length ?? 0;
   const threadBadge =
     threadCount > 0
-      ? `<span class="fn-threads" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span> `
+      ? `<span class="fn-threads" title="${pluralize(threadCount, "thread")}">💬 ${threadCount}</span> `
       : "";
   const renameHint =
     info.file.from &&
@@ -559,8 +560,8 @@ function renderThread(thread: Thread, ctx: RenderContext): string {
       : "";
   // `<pr-url>/files#r<id>` lands on the diff view with the thread anchored,
   // not the conversation timeline (which is what html_url from the API gives).
-  const filesUrl = `${ctx.prUrl}/files#r${thread.root.id}`;
-  return `<div class="thread${thread.hasPending ? " has-pending" : ""}" data-thread-root-id="${thread.root.id}">
+  const filesUrl = `${ctx.prUrl}/files#r${thread.id}`;
+  return `<div class="thread${thread.hasPending ? " has-pending" : ""}" data-thread-root-id="${thread.id}">
     <div class="thread-header">
       ${pendingBadge}
       ${outdatedBadge}
@@ -633,15 +634,6 @@ function fileBadge(file: parseDiff.File): string {
   if (file.from && file.to && file.from !== file.to)
     return `<span class="badge renamed">RENAMED</span>`;
   return `<span class="badge modified">MODIFIED</span>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 function capitalize(s: string): string {
@@ -967,8 +959,6 @@ const CLIENT_SCRIPT = `
           side: row.dataset.side,
           body,
         });
-        // Reload so the new thread shows up inline.
-        // Preserve scroll position via sessionStorage.
         sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
         location.reload();
       } catch (err) {
@@ -1061,7 +1051,6 @@ const CLIENT_SCRIPT = `
     }
   }
   if (refreshBtn) {
-    // First check after a short delay so the page finishes rendering.
     setTimeout(checkForUpdates, 2000);
     setInterval(checkForUpdates, 15000);
   }
@@ -1070,15 +1059,14 @@ const CLIENT_SCRIPT = `
     closeSubmitModal();
     const el = document.getElementById("comment-" + id);
     if (!el) return;
-    // Open any collapsed <details> ancestors (generated files).
     let parent = el.parentElement;
     while (parent) {
       if (parent.tagName === "DETAILS" && !parent.open) parent.open = true;
       parent = parent.parentElement;
     }
     el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Kick a reflow to restart the animation if goToComment fires twice.
     el.classList.remove("flash-highlight");
-    // Force reflow so the animation restarts if triggered again.
     void el.offsetWidth;
     el.classList.add("flash-highlight");
   }

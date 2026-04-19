@@ -2,14 +2,13 @@
 import open from "open";
 import {
   fetchAuthedUser,
-  fetchCommentsForReview,
   fetchFileAtRef,
-  fetchPendingReview,
   fetchPrDiff,
   fetchPrInfo,
-  fetchReviewComments,
+  loadReviewState,
   parsePrUrl,
 } from "./gh.js";
+import { pluralize } from "./html.js";
 import { buildGeneratedMatcher } from "./gitattributes.js";
 import { startServer } from "./server.js";
 
@@ -105,26 +104,20 @@ async function main() {
     `Fetching ${ref.owner}/${ref.repo}#${ref.number} via gh…\n`,
   );
 
-  // Only .gitattributes needs pr.headSha — everything else runs in parallel.
-  const [pr, authedUser, submittedComments, pendingReview, diff] =
-    await Promise.all([
-      fetchPrInfo(ref),
-      fetchAuthedUser(),
-      fetchReviewComments(ref),
-      fetchPendingReview(ref),
-      fetchPrDiff(ref),
-    ]);
-  const [gitattributes, pendingComments] = await Promise.all([
-    fetchFileAtRef(ref, ".gitattributes", pr.headSha),
-    pendingReview
-      ? fetchCommentsForReview(ref, pendingReview.databaseId)
-      : Promise.resolve([]),
+  // Only .gitattributes depends on pr.headSha; everything else can run in
+  // parallel with the PR fetch.
+  const [pr, authedUser, reviewState, diff] = await Promise.all([
+    fetchPrInfo(ref),
+    fetchAuthedUser(),
+    loadReviewState(ref),
+    fetchPrDiff(ref),
   ]);
+  const gitattributes = await fetchFileAtRef(
+    ref,
+    ".gitattributes",
+    pr.headSha,
+  );
   const generatedMatcher = buildGeneratedMatcher(gitattributes);
-  const byId = new Map<number, (typeof submittedComments)[number]>();
-  for (const c of submittedComments) byId.set(c.id, c);
-  for (const c of pendingComments) byId.set(c.id, c);
-  const initialReviewComments = Array.from(byId.values());
 
   const server = await startServer({
     ref,
@@ -132,17 +125,16 @@ async function main() {
     diff,
     authedUser,
     generatedMatcher,
-    initialReviewComments,
-    initialPendingReview: pendingReview,
+    initialReviewState: reviewState,
     port: args.port,
   });
   process.stdout.write(`\n  ${pr.title}\n`);
   process.stdout.write(
-    `  +${pr.additions} −${pr.deletions} across ${pr.changedFiles} file${pr.changedFiles === 1 ? "" : "s"}\n`,
+    `  +${pr.additions} −${pr.deletions} across ${pluralize(pr.changedFiles, "file")}\n`,
   );
-  if (pendingReview) {
+  if (reviewState.pendingReview) {
     process.stdout.write(
-      `  pending review with ${pendingReview.commentIds.length} comment${pendingReview.commentIds.length === 1 ? "" : "s"}\n`,
+      `  pending review with ${pluralize(reviewState.pendingCommentIds.size, "comment")}\n`,
     );
   }
   process.stdout.write(`\nServing at ${server.prUrl}\n`);
