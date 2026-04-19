@@ -12,6 +12,25 @@ interface RenderContext {
   threadIndex: ThreadIndex;
 }
 
+interface FileInfo {
+  file: parseDiff.File;
+  index: number;
+  matchPath: string;
+  isGenerated: boolean;
+}
+
+type TreeNode = TreeFile | TreeDir;
+interface TreeFile {
+  kind: "file";
+  name: string;
+  info: FileInfo;
+}
+interface TreeDir {
+  kind: "dir";
+  name: string;
+  children: TreeNode[];
+}
+
 export function renderPage(
   pr: PrInfo,
   rawDiff: string,
@@ -40,19 +59,10 @@ export function renderPage(
 
   const ctx: RenderContext = { prUrl: pr.url, threadIndex };
 
-  const fileNav = fileInfos
-    .map(({ file, index, matchPath, isGenerated }) => {
-      const path = displayPath(file);
-      const adds = file.additions ?? 0;
-      const dels = file.deletions ?? 0;
-      const threadCount = threadsByFile.get(matchPath)?.length ?? 0;
-      const threadBadge =
-        threadCount > 0
-          ? `<span class="fn-threads" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span> `
-          : "";
-      return `<li class="${isGenerated ? "is-generated" : ""}"><a href="#file-${index}"><span class="fn-path">${escapeHtml(path)}</span><span class="fn-stats">${threadBadge}${isGenerated ? '<span class="gen-dot" title="generated">●</span> ' : ""}<span class="add">+${adds}</span> <span class="del">-${dels}</span></span></a></li>`;
-    })
-    .join("");
+  const fileTree = renderFileTree(
+    buildFileTree(fileInfos),
+    threadsByFile,
+  );
 
   const fileSections = fileInfos
     .map(({ file, index, matchPath, isGenerated }) =>
@@ -99,7 +109,7 @@ export function renderPage(
 <div class="layout">
   <aside class="sidebar">
     <div class="sidebar-header">Files changed (${files.length})</div>
-    <ul class="file-nav">${fileNav}</ul>
+    <nav class="file-tree">${fileTree}</nav>
   </aside>
   <main class="content">
     ${generatedBanner}
@@ -187,6 +197,135 @@ function renderAuthChip(user: AuthedUser | null): string {
       <span class="auth-chip__login">${escapeHtml(user.login)}</span>
     </span>
   </a>`;
+}
+
+function buildFileTree(infos: FileInfo[]): TreeNode[] {
+  type DirInt = { kind: "dir"; children: Map<string, DirInt | FileInt> };
+  type FileInt = { kind: "file"; info: FileInfo };
+  const root: DirInt = { kind: "dir", children: new Map() };
+
+  for (const info of infos) {
+    const segments = (info.matchPath || "(unknown)")
+      .split("/")
+      .filter(Boolean);
+    let cursor = root;
+    for (let i = 0; i < segments.length - 1; i++) {
+      const seg = segments[i];
+      const existing = cursor.children.get(seg);
+      let next: DirInt;
+      if (existing && existing.kind === "dir") {
+        next = existing;
+      } else {
+        next = { kind: "dir", children: new Map() };
+        cursor.children.set(seg, next);
+      }
+      cursor = next;
+    }
+    const leaf = segments[segments.length - 1] ?? "(unknown)";
+    cursor.children.set(leaf, { kind: "file", info });
+  }
+
+  const materialize = (dir: DirInt): TreeNode[] => {
+    const nodes: TreeNode[] = [];
+    for (const [name, child] of dir.children) {
+      if (child.kind === "file") {
+        nodes.push({ kind: "file", name, info: child.info });
+        continue;
+      }
+      const sub = materialize(child);
+      // Collapse a directory whose only child is another directory; the
+      // combined segment ("src/foo/bar") keeps the tree compact for PRs
+      // that only touch a deep subtree.
+      if (sub.length === 1 && sub[0].kind === "dir") {
+        nodes.push({
+          kind: "dir",
+          name: `${name}/${sub[0].name}`,
+          children: sub[0].children,
+        });
+      } else {
+        nodes.push({ kind: "dir", name, children: sub });
+      }
+    }
+    nodes.sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return nodes;
+  };
+
+  return materialize(root);
+}
+
+function renderFileTree(
+  nodes: TreeNode[],
+  threadsByFile: Map<string, Thread[]>,
+): string {
+  return `<ul class="tree">${nodes.map((n) => renderTreeNode(n, threadsByFile)).join("")}</ul>`;
+}
+
+function renderTreeNode(
+  node: TreeNode,
+  threadsByFile: Map<string, Thread[]>,
+): string {
+  if (node.kind === "file") return renderTreeFile(node, threadsByFile);
+
+  const agg = aggregateDir(node, threadsByFile);
+  const stats = `<span class="tree-dir-stats">${agg.files}${agg.threads > 0 ? ` · 💬 ${agg.threads}` : ""}</span>`;
+  const inner = node.children
+    .map((c) => renderTreeNode(c, threadsByFile))
+    .join("");
+  return `<li class="tree-dir">
+    <details open>
+      <summary><span class="tree-dir-name">${escapeHtml(node.name)}</span>${stats}</summary>
+      <ul>${inner}</ul>
+    </details>
+  </li>`;
+}
+
+function renderTreeFile(
+  node: TreeFile,
+  threadsByFile: Map<string, Thread[]>,
+): string {
+  const { info } = node;
+  const adds = info.file.additions ?? 0;
+  const dels = info.file.deletions ?? 0;
+  const threadCount = threadsByFile.get(info.matchPath)?.length ?? 0;
+  const threadBadge =
+    threadCount > 0
+      ? `<span class="fn-threads" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span> `
+      : "";
+  const renameHint =
+    info.file.from &&
+    info.file.to &&
+    info.file.from !== info.file.to &&
+    info.file.from !== "/dev/null" &&
+    info.file.to !== "/dev/null"
+      ? ` <span class="tree-rename" title="renamed from ${escapeHtml(info.file.from)}">↳</span>`
+      : "";
+  return `<li class="tree-file ${info.isGenerated ? "is-generated" : ""}">
+    <a href="#file-${info.index}" title="${escapeHtml(info.matchPath)}">
+      <span class="tree-file-name">${escapeHtml(node.name)}${renameHint}</span>
+      <span class="fn-stats">${threadBadge}${info.isGenerated ? '<span class="gen-dot" title="generated">●</span> ' : ""}<span class="add">+${adds}</span> <span class="del">-${dels}</span></span>
+    </a>
+  </li>`;
+}
+
+function aggregateDir(
+  node: TreeDir,
+  threadsByFile: Map<string, Thread[]>,
+): { files: number; threads: number } {
+  let files = 0;
+  let threads = 0;
+  const walk = (n: TreeNode) => {
+    if (n.kind === "file") {
+      files++;
+      threads += threadsByFile.get(n.info.matchPath)?.length ?? 0;
+      return;
+    }
+    for (const c of n.children) walk(c);
+  };
+  walk(node);
+  return { files, threads };
 }
 
 function avatarImg(url: string, className: string): string {
@@ -396,10 +535,21 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 80px); }
 .sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); overflow-y: auto; position: sticky; top: 80px; height: calc(100vh - 80px); }
 .sidebar-header { padding: 12px 16px; font-weight: 600; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-.file-nav { list-style: none; margin: 0; padding: 0; }
-.file-nav li a { display: flex; justify-content: space-between; gap: 8px; padding: 6px 16px; color: var(--text); font-size: 12px; border-left: 2px solid transparent; }
-.file-nav li a:hover { background: var(--bg-hover); text-decoration: none; border-left-color: var(--accent); }
-.fn-path { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.file-tree { padding: 6px 0; }
+.file-tree ul { list-style: none; margin: 0; padding: 0; }
+.file-tree ul ul { padding-left: 10px; border-left: 1px solid var(--border); margin-left: 14px; }
+.tree-dir > details > summary { display: flex; align-items: center; gap: 6px; padding: 3px 12px 3px 6px; cursor: pointer; font-size: 12px; color: var(--text-dim); border-radius: 3px; list-style: none; }
+.tree-dir > details > summary::-webkit-details-marker { display: none; }
+.tree-dir > details > summary::before { content: "▸"; display: inline-block; width: 10px; color: var(--text-dim); font-size: 10px; transition: transform 0.08s; }
+.tree-dir > details[open] > summary::before { transform: rotate(90deg); }
+.tree-dir > details > summary:hover { background: var(--bg-hover); color: var(--text); }
+.tree-dir-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.tree-dir-stats { flex-shrink: 0; font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--text-dim); }
+.tree-file a { display: flex; align-items: center; gap: 8px; padding: 3px 12px 3px 22px; color: var(--text); font-size: 12px; border-left: 2px solid transparent; }
+.tree-file a:hover { background: var(--bg-hover); text-decoration: none; border-left-color: var(--accent); }
+.tree-file.is-generated a { color: var(--text-dim); }
+.tree-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+.tree-rename { color: var(--accent); font-size: 10px; margin-left: 2px; }
 .fn-stats { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 .content { padding: 16px 24px; max-width: 100%; overflow-x: hidden; }
 .file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 24px; overflow: hidden; background: var(--bg-elev); }
@@ -421,7 +571,6 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .file.is-generated details[open] .hint::after { content: " (expanded)"; }
 .gen-banner { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--text-dim); padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: var(--text-dim); font-size: 13px; }
 .gen-banner code { font-size: 11px; }
-.file-nav li.is-generated a { color: var(--text-dim); }
 .gen-dot { color: var(--text-dim); }
 .fn-threads { color: var(--accent); margin-right: 6px; }
 .file-thread-count { color: var(--accent); font-size: 12px; margin-left: 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
