@@ -27,17 +27,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node
+        # Node 24 ships with npm 11+; OIDC-based registry auth for
+        # Trusted Publishers needs ≥ 11.5.1. Node 22 (npm 10.x) would
+        # sign provenance correctly but 404 on the PUT because it
+        # falls back to an empty NODE_AUTH_TOKEN.
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Use npm 11+ (for Trusted Publisher OIDC upload auth)
-        # Node 22 ships with npm 10.x; npm's OIDC-only publish auth for
-        # Trusted Publishers landed in 11.5.1. Without this bump the
-        # `--provenance` signing works but the PUT falls back to an
-        # empty NODE_AUTH_TOKEN and 404s.
-        run: npm install -g npm@latest
 
       - name: Install (strict lockfile)
         run: npm ci
