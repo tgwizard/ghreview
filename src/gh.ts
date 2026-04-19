@@ -152,6 +152,34 @@ export interface ReviewComment {
   originalSide: DiffSide | null;
 }
 
+export interface IssueComment {
+  id: number;
+  userLogin: string;
+  userAvatarUrl: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl: string;
+}
+
+export async function fetchIssueComments(
+  ref: PrRef,
+): Promise<IssueComment[]> {
+  const arr = await ghApiJson<any[]>([
+    "--paginate",
+    `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments?per_page=100`,
+  ]);
+  return arr.map((c) => ({
+    id: c.id,
+    userLogin: c.user?.login ?? "",
+    userAvatarUrl: c.user?.avatar_url ?? "",
+    body: c.body ?? "",
+    createdAt: c.created_at ?? "",
+    updatedAt: c.updated_at ?? "",
+    htmlUrl: c.html_url ?? "",
+  }));
+}
+
 export async function fetchReviewComments(
   ref: PrRef,
 ): Promise<ReviewComment[]> {

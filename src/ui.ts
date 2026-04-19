@@ -2,6 +2,7 @@ import parseDiff from "parse-diff";
 import type {
   AuthedUser,
   DiffSide,
+  IssueComment,
   PendingReview,
   PrInfo,
   ReviewComment,
@@ -48,6 +49,7 @@ export function renderPage(
   threadIndex: ThreadIndex = EMPTY_INDEX,
   pendingReview: PendingReview | null = null,
   pendingCommentIds: Set<number> = new Set(),
+  issueComments: IssueComment[] = [],
 ): string {
   const files = parseDiff(rawDiff);
   const fileInfos = files.map((f, i) => {
@@ -131,17 +133,30 @@ export function renderPage(
     <span class="del">−${pr.deletions}</span>
   </div>
 </header>
-<div class="layout">
-  <aside class="sidebar">
-    <div class="sidebar-header">Files changed (${files.length})</div>
-    <nav class="file-tree">${fileTree}</nav>
-    <div class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
-  </aside>
-  <main class="content">
-    ${generatedBanner}
-    ${fileSections || '<div class="empty">No file changes in this PR.</div>'}
-  </main>
-</div>
+<nav class="tabs" role="tablist">
+  <button type="button" class="tab" role="tab" data-tab="conversation">
+    Conversation${issueComments.length > 0 ? ` <span class="tab-count">${issueComments.length}</span>` : ""}
+  </button>
+  <button type="button" class="tab active" role="tab" data-tab="files">
+    Files <span class="tab-count">${files.length}</span>
+  </button>
+</nav>
+<section class="tab-panel" data-panel="conversation" hidden>
+  ${renderConversationPanel(pr, issueComments)}
+</section>
+<section class="tab-panel" data-panel="files">
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">Files changed (${files.length})</div>
+      <nav class="file-tree">${fileTree}</nav>
+      <div class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
+    </aside>
+    <main class="content">
+      ${generatedBanner}
+      ${fileSections || '<div class="empty">No file changes in this PR.</div>'}
+    </main>
+  </div>
+</section>
 ${renderSubmitModal(pendingReview, pendingCount, collectPendingComments(threadIndex, pendingCommentIds))}
 <script>${CLIENT_SCRIPT}</script>
 </body>
@@ -334,6 +349,48 @@ function renderFile(
   ${header}
   ${body}
 </section>`;
+}
+
+function renderConversationPanel(
+  pr: PrInfo,
+  comments: IssueComment[],
+): string {
+  const descBody = pr.body?.trim()
+    ? renderMarkdown(pr.body)
+    : `<p class="conversation-empty">No description.</p>`;
+  const description = `<article class="conv-item conv-description">
+    <div class="comment-meta">
+      <a class="comment-author" href="${userProfileUrl(pr.author)}" target="_blank" rel="noopener">${escapeHtml(pr.author)}</a>
+      <span class="conv-item-kind">opened this pull request</span>
+    </div>
+    <div class="comment-md">${descBody}</div>
+  </article>`;
+
+  const items = comments
+    .map((c) => {
+      const edited =
+        c.updatedAt && c.updatedAt !== c.createdAt
+          ? ` <span class="comment-edited" title="edited ${escapeHtml(c.updatedAt)}">(edited)</span>`
+          : "";
+      return `<article class="conv-item">
+        ${avatarImg(c.userAvatarUrl, "comment-avatar")}
+        <div class="conv-item-body">
+          <div class="comment-meta">
+            <a class="comment-author" href="${userProfileUrl(c.userLogin)}" target="_blank" rel="noopener">${escapeHtml(c.userLogin)}</a>
+            <span class="comment-time" title="${escapeHtml(c.createdAt)}">${formatTime(c.createdAt)}</span>${edited}
+            <a class="thread-link" href="${escapeHtml(c.htmlUrl)}" target="_blank" rel="noopener" title="Open on GitHub">↗</a>
+          </div>
+          <div class="comment-md">${renderMarkdown(c.body)}</div>
+        </div>
+      </article>`;
+    })
+    .join("");
+
+  return `<div class="conversation">
+    ${description}
+    ${items}
+    ${comments.length === 0 ? '<p class="conversation-empty">No comments yet.</p>' : ""}
+  </div>`;
 }
 
 function renderAuthChip(user: AuthedUser | null): string {
@@ -721,10 +778,14 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); f
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--bg-elev); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
-.pr-header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 0; z-index: 10; }
-.pr-title-row { display: flex; align-items: center; gap: 12px; }
-.pr-title-row h1 { margin: 0; font-size: 18px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.pr-header { padding: 14px 20px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 0; z-index: 10; }
+.pr-title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pr-title-row h1 { margin: 0; font-size: 18px; font-weight: 500; flex: 1 1 320px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+@media (max-width: 1100px) {
+  .auth-chip__meta { display: none; }
+  .auth-chip { padding: 2px; }
+}
 .auth-chip { display: inline-flex; align-items: center; gap: 8px; padding: 3px 10px 3px 3px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 12px; text-decoration: none; }
 .auth-chip:hover { background: var(--bg-hover); text-decoration: none; border-color: var(--accent); }
 .auth-chip--none { padding: 4px 10px; background: transparent; color: var(--text-dim); cursor: default; }
@@ -740,8 +801,28 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .pr-meta .sep { color: var(--border); }
 .add { color: var(--add-fg); }
 .del { color: var(--del-fg); }
+/* Tabs */
+.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 80px; z-index: 9; }
+.tab { background: none; border: none; color: var(--text-dim); padding: 10px 14px; font-size: 13px; font-family: inherit; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 6px; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-count { background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+.tab.active .tab-count { background: var(--bg-hover); color: var(--text); }
+.tab-panel[hidden] { display: none; }
+
+/* Conversation tab */
+.conversation { max-width: 820px; margin: 16px auto 48px; padding: 0 24px; }
+.conv-item { display: grid; grid-template-columns: 40px 1fr; gap: 12px; margin-bottom: 16px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+.conv-item.conv-description { grid-template-columns: 1fr; }
+.conv-item .comment-avatar { width: 36px; height: 36px; }
+.conv-item-body { min-width: 0; }
+.conv-item-kind { color: var(--text-dim); font-size: 12px; }
+.conv-item .comment-meta { margin-bottom: 6px; }
+.conv-item .thread-link { margin-left: auto; }
+.conversation-empty { color: var(--text-dim); font-style: italic; text-align: center; }
+
 .layout { display: grid; grid-template-columns: var(--sidebar-width, 300px) 1fr; min-height: calc(100vh - 80px); }
-.sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); overflow-y: auto; position: sticky; top: 80px; height: calc(100vh - 80px); }
+.sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); overflow-y: auto; position: sticky; top: 118px; height: calc(100vh - 118px); }
 .sidebar-resize-handle { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 20; }
 .sidebar-resize-handle:hover, .sidebar-resize-handle.dragging { background: var(--accent); opacity: 0.35; }
 body.sidebar-resizing { user-select: none; cursor: col-resize; }
@@ -768,7 +849,7 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .file > *:first-child { border-top-left-radius: 6px; border-top-right-radius: 6px; }
 .file > *:last-child { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
 .file .diff { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
-.file-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 80px; z-index: 5; }
+.file-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 118px; z-index: 5; }
 .file-path { display: flex; gap: 10px; align-items: center; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .file-stats { font-family: ui-monospace, Menlo, monospace; font-size: 12px; display: flex; gap: 8px; }
 .badge { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 6px; border-radius: 4px; }
@@ -1368,11 +1449,35 @@ const CLIENT_SCRIPT = `
   }
 
   // Restore scroll after page reload.
-  const saved = sessionStorage.getItem("ghreview:scrollY");
-  if (saved) {
+  const savedScroll = sessionStorage.getItem("ghreview:scrollY");
+  if (savedScroll) {
     sessionStorage.removeItem("ghreview:scrollY");
-    window.scrollTo(0, Number(saved));
+    window.scrollTo(0, Number(savedScroll));
   }
+
+  // --- Tabs ---
+  function activateTab(name) {
+    const valid = name === "conversation" || name === "files";
+    const tab = valid ? name : "files";
+    document.querySelectorAll(".tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === tab);
+    });
+    document.querySelectorAll(".tab-panel").forEach((p) => {
+      p.hidden = p.dataset.panel !== tab;
+    });
+  }
+  document.querySelectorAll(".tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const name = btn.dataset.tab;
+      // Clear file-anchor hashes when switching; only keep tab hash for
+      // Conversation (so URL is shareable).
+      const nextHash = name === "conversation" ? "#conversation" : "";
+      history.replaceState(null, "", location.pathname + location.search + nextHash);
+      activateTab(name);
+    });
+  });
+  // Always land on Files by default, but honor #conversation if shared.
+  activateTab(location.hash === "#conversation" ? "conversation" : "files");
 
   // --- Sidebar resize ---
   (function initSidebarResize(){

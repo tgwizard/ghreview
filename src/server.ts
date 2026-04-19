@@ -8,6 +8,7 @@ import {
   editReviewComment,
   fetchAutoMerge,
   fetchFileAtRef,
+  fetchIssueComments,
   fetchPrDiff,
   fetchPrInfo,
   loadReviewState,
@@ -16,6 +17,7 @@ import {
   type AuthedUser,
   type AutoMergeState,
   type DiffSide,
+  type IssueComment,
   type PrInfo,
   type PrRef,
   type ReviewState,
@@ -32,6 +34,7 @@ export interface ServerOptions {
   authedUser: AuthedUser | null;
   generatedMatcher: GeneratedMatcher;
   initialReviewState: ReviewState;
+  initialIssueComments: IssueComment[];
   port?: number;
 }
 
@@ -51,6 +54,7 @@ export async function startServer(
   let diff = opts.diff;
   let generatedMatcher = opts.generatedMatcher;
   let review = opts.initialReviewState;
+  let issueComments = opts.initialIssueComments;
   let cachedHtml: string | null = null;
 
   const renderHtml = () => {
@@ -67,12 +71,18 @@ export async function startServer(
       threadIndex,
       review.pendingReview,
       review.pendingCommentIds,
+      issueComments,
     );
     return cachedHtml;
   };
 
   const refreshReview = async () => {
-    review = await loadReviewState(opts.ref);
+    const [next, issues] = await Promise.all([
+      loadReviewState(opts.ref),
+      fetchIssueComments(opts.ref),
+    ]);
+    review = next;
+    issueComments = issues;
     cachedHtml = null;
   };
 
