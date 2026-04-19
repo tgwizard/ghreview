@@ -61,7 +61,6 @@ export function renderPage(
       isGenerated: generatedMatcher.isGenerated(mPath),
     };
   });
-  const generatedCount = fileInfos.filter((fi) => fi.isGenerated).length;
 
   const threadsByFile = new Map<string, Thread[]>();
   for (const t of threadIndex.all) {
@@ -93,11 +92,6 @@ export function renderPage(
       ),
     )
     .join("");
-
-  const generatedBanner =
-    generatedCount > 0
-      ? `<div class="gen-banner">${pluralize(generatedCount, "generated file")} hidden by default (based on <code>.gitattributes</code>). Click a file header to expand.</div>`
-      : "";
 
   // pr.url is `https://github.com/<owner>/<repo>/pull/<n>` — derive the
   // repo slug + repo homepage URL so both the browser tab title and the
@@ -162,7 +156,6 @@ export function renderPage(
       <div class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
     </aside>
     <main class="content">
-      ${generatedBanner}
       ${fileSections || '<div class="empty">No file changes in this PR.</div>'}
     </main>
   </div>
@@ -879,8 +872,6 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .file.is-generated details[open] summary .file-header { border-bottom: 1px solid var(--border); }
 .file.is-generated .hint { color: var(--text-dim); font-style: italic; font-size: 11px; }
 .file.is-generated details[open] .hint::after { content: " (expanded)"; }
-.gen-banner { background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--text-dim); padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; color: var(--text-dim); font-size: 13px; }
-.gen-banner code { font-size: 11px; }
 .gen-dot { color: var(--text-dim); }
 .fn-threads { color: var(--accent); margin-right: 6px; }
 .file-thread-count { color: var(--accent); font-size: 12px; margin-left: 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
