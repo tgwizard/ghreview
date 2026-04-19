@@ -7,6 +7,7 @@ import type {
   ReviewComment,
 } from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
+import { detectLanguage, highlightLine } from "./highlight.js";
 import { renderMarkdown } from "./markdown.js";
 import type { Thread, ThreadIndex } from "./threads.js";
 
@@ -258,8 +259,9 @@ function renderFile(
   const badge = fileBadge(file);
 
   const placedIds = new Set<number>();
+  const language = detectLanguage(mPath);
   const chunks = file.chunks
-    .map((c) => renderChunk(c, mPath, placedIds, ctx))
+    .map((c) => renderChunk(c, mPath, placedIds, ctx, language))
     .join("");
 
   const unplaced = threadsForFile.filter((t) => !placedIds.has(t.id));
@@ -477,6 +479,7 @@ function renderChunk(
   path: string,
   placedIds: Set<number>,
   ctx: RenderContext,
+  language: string | null,
 ): string {
   const rows = chunk.changes
     .map((ch) => {
@@ -498,7 +501,8 @@ function renderChunk(
       const dataAttrs = commentable
         ? ` data-path="${escapeHtml(path)}" data-side="${commentSide}" data-line="${commentLine}"`
         : "";
-      const row = `<tr class="row ${cls}"${dataAttrs}><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}</td><td class="marker">${marker}${addBtn}</td><td class="code">${escapeHtml(content)}</td></tr>`;
+      const codeHtml = highlightLine(content, language);
+      const row = `<tr class="row ${cls}"${dataAttrs}><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}</td><td class="marker">${marker}${addBtn}</td><td class="code hljs">${codeHtml}</td></tr>`;
 
       const threads: Thread[] = [];
       const seen = new Set<number>();
@@ -783,6 +787,24 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .row.add .marker { color: var(--add-fg); }
 .row.del .marker { color: var(--del-fg); }
 .row .code { padding: 0 8px; white-space: pre; overflow-wrap: normal; word-break: normal; }
+
+/* highlight.js tokens (GitHub-dark inspired) */
+.hljs { background: transparent; }
+.hljs-comment, .hljs-quote { color: #8b949e; font-style: italic; }
+.hljs-keyword, .hljs-type, .hljs-selector-tag, .hljs-doctag { color: #ff7b72; }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-attribute, .hljs-meta-string { color: #a5d6ff; }
+.hljs-number, .hljs-literal, .hljs-variable, .hljs-template-variable { color: #79c0ff; }
+.hljs-title, .hljs-title.function_, .hljs-title.class_ { color: #d2a8ff; }
+.hljs-built_in, .hljs-builtin-name, .hljs-symbol, .hljs-bullet { color: #ffa657; }
+.hljs-name, .hljs-tag, .hljs-selector-id, .hljs-selector-class { color: #7ee787; }
+.hljs-attr, .hljs-params { color: #79c0ff; }
+.hljs-meta, .hljs-meta-keyword { color: #8b949e; }
+.hljs-deletion { color: #ffa198; }
+.hljs-link { color: #a5d6ff; text-decoration: underline; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
+/* Keep add/del backgrounds dominant on highlighted rows. */
+.row.add .hljs, .row.del .hljs { background: transparent; }
 .empty { padding: 40px; text-align: center; color: var(--text-dim); }
 
 /* Add-comment affordance — sits in the +/- gutter column */
