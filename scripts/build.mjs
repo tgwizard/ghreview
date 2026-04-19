@@ -1,3 +1,4 @@
+import { chmodSync } from "node:fs";
 import { build } from "esbuild";
 
 // Bundle cli.ts with every runtime dep inlined. The published package ships
@@ -27,3 +28,7 @@ await build({
   external: [],
   logLevel: "info",
 });
+
+// npm pack preserves file mode from disk, so the bin must be executable
+// here — otherwise `npx @tgwizard/ghreview` fails at exec time.
+chmodSync("dist/cli.js", 0o755);
