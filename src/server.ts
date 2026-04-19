@@ -8,7 +8,10 @@ import {
   editReviewComment,
   fetchAutoMerge,
   fetchCommentsForReview,
+  fetchFileAtRef,
   fetchPendingReview,
+  fetchPrDiff,
+  fetchPrInfo,
   fetchReviewComments,
   replyToReviewComment,
   submitPendingReview,
@@ -20,7 +23,7 @@ import {
   type PrRef,
   type ReviewComment,
 } from "./gh.js";
-import type { GeneratedMatcher } from "./gitattributes.js";
+import { buildGeneratedMatcher, type GeneratedMatcher } from "./gitattributes.js";
 import { buildThreadIndex } from "./threads.js";
 import { renderPage } from "./ui.js";
 
@@ -47,19 +50,21 @@ export async function startServer(
   const prPath = `/${encodeURIComponent(opts.ref.owner)}/${encodeURIComponent(opts.ref.repo)}/pull/${opts.ref.number}`;
   const filesPath = `${prPath}/files`;
 
+  let pr = opts.pr;
+  let diff = opts.diff;
+  let generatedMatcher = opts.generatedMatcher;
   let comments = opts.initialReviewComments;
   let pendingReview = opts.initialPendingReview;
   let cachedHtml: string | null = null;
-  const prJson = JSON.stringify(opts.pr, null, 2);
 
   const renderHtml = () => {
     if (cachedHtml) return cachedHtml;
     const pendingIds = new Set(pendingReview?.commentIds ?? []);
     const threadIndex = buildThreadIndex(comments, pendingIds);
     cachedHtml = renderPage(
-      opts.pr,
-      opts.diff,
-      opts.generatedMatcher,
+      pr,
+      diff,
+      generatedMatcher,
       opts.authedUser,
       threadIndex,
       pendingReview,
@@ -83,9 +88,27 @@ export async function startServer(
     cachedHtml = null;
   };
 
+  // Re-fetch everything (PR info, diff, .gitattributes, review state).
+  // Called when the user hits Refresh or we detect new commits upstream.
+  const refreshAll = async () => {
+    const [newPr, newDiff] = await Promise.all([
+      fetchPrInfo(opts.ref),
+      fetchPrDiff(opts.ref),
+    ]);
+    const newGitattributes = await fetchFileAtRef(
+      opts.ref,
+      ".gitattributes",
+      newPr.headSha,
+    );
+    pr = newPr;
+    diff = newDiff;
+    generatedMatcher = buildGeneratedMatcher(newGitattributes);
+    await refreshReview();
+  };
+
   const ensurePendingReview = async (): Promise<string> => {
     if (pendingReview) return pendingReview.id;
-    const id = await createPendingReview(opts.pr.nodeId, "");
+    const id = await createPendingReview(pr.nodeId, "");
     pendingReview = { id, databaseId: 0, body: "", commentIds: [] };
     return id;
   };
@@ -112,13 +135,22 @@ export async function startServer(
         }
         if (path === `${prPath}.diff` || path === "/raw.diff") {
           res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-          res.end(opts.diff);
+          res.end(diff);
           return;
         }
         if (path === `${prPath}.json` || path === "/pr.json") {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(prJson);
+          res.end(JSON.stringify(pr, null, 2));
           return;
+        }
+        if (path === "/api/updates") {
+          // Live-poll GitHub for the PR's current head SHA + updated_at.
+          // Client compares against what the page was rendered with.
+          const latest = await fetchPrInfo(opts.ref);
+          return json(res, 200, {
+            headSha: latest.headSha,
+            updatedAt: latest.updatedAt,
+          });
         }
         if (path === "/api/auto-merge") {
           const state = await fetchAutoMerge(opts.ref);
@@ -173,9 +205,17 @@ export async function startServer(
         }
 
         if (path === "/api/disable-auto-merge") {
-          await disableAutoMerge(opts.pr.nodeId);
+          await disableAutoMerge(pr.nodeId);
           const state: AutoMergeState = await fetchAutoMerge(opts.ref);
           return json(res, 200, state);
+        }
+
+        if (path === "/api/refresh") {
+          await refreshAll();
+          return json(res, 200, {
+            headSha: pr.headSha,
+            updatedAt: pr.updatedAt,
+          });
         }
       }
 

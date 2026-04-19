@@ -43,6 +43,7 @@ export interface PrInfo {
   additions: number;
   deletions: number;
   changedFiles: number;
+  updatedAt: string;
 }
 
 export function parsePrUrl(input: string): PrRef {
@@ -77,6 +78,7 @@ export async function fetchPrInfo(ref: PrRef): Promise<PrInfo> {
     additions: data.additions ?? 0,
     deletions: data.deletions ?? 0,
     changedFiles: data.changed_files ?? 0,
+    updatedAt: data.updated_at ?? "",
   };
 }
 

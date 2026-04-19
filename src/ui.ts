@@ -108,6 +108,10 @@ export function renderPage(
     <span class="pr-state ${pr.state} ${pr.isDraft ? "draft" : ""}">${pr.isDraft ? "Draft" : capitalize(pr.state)}</span>
     <h1><a href="${escapeHtml(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${escapeHtml(pr.title)}</h1>
     <div class="pr-header-right">
+      <button type="button" class="btn refresh-btn" data-action="refresh" title="Re-fetch the PR state from GitHub" data-initial-head-sha="${escapeHtml(pr.headSha)}" data-initial-updated-at="${escapeHtml(pr.updatedAt)}">
+        <span class="refresh-icon" aria-hidden="true">⟳</span>
+        <span class="refresh-label">Refresh</span>
+      </button>
       <button type="button" class="btn primary" data-action="open-submit" title="Open the submit review modal">
         Submit review${pendingCount > 0 ? ` <span class="btn-count">${pendingCount}</span>` : ""}
       </button>
@@ -828,6 +832,13 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .btn.danger { background: #da3633; color: white; border-color: transparent; }
 .btn.danger:hover { background: #f85149; }
 .btn-count { background: rgba(255, 255, 255, 0.2); padding: 1px 6px; border-radius: 999px; margin-left: 4px; font-size: 11px; }
+.refresh-btn { display: inline-flex; align-items: center; gap: 6px; position: relative; }
+.refresh-btn .refresh-icon { display: inline-block; transition: transform 0.4s; }
+.refresh-btn.spinning .refresh-icon { animation: refresh-spin 0.8s linear infinite; }
+@keyframes refresh-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.refresh-btn.has-updates { border-color: #d29922; background: rgba(210, 153, 34, 0.15); color: #d29922; }
+.refresh-btn.has-updates::after { content: ""; position: absolute; top: 2px; right: 2px; width: 7px; height: 7px; background: #d29922; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-elev); }
+.refresh-btn.has-updates .refresh-label::after { content: " · new"; font-weight: 600; }
 
 /* Submit-review modal */
 .modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -981,8 +992,57 @@ const CLIENT_SCRIPT = `
     } else if (act === "go-to-comment") {
       const id = t.getAttribute("data-comment-id");
       if (id) goToComment(id);
+    } else if (act === "refresh") {
+      doRefresh();
     }
   });
+
+  // --- Refresh + freshness polling ---
+  const refreshBtn = document.querySelector(".refresh-btn");
+  const initialHeadSha = refreshBtn
+    ? refreshBtn.getAttribute("data-initial-head-sha") || ""
+    : "";
+  const initialUpdatedAt = refreshBtn
+    ? refreshBtn.getAttribute("data-initial-updated-at") || ""
+    : "";
+
+  async function doRefresh() {
+    if (!refreshBtn) return;
+    if (refreshBtn.classList.contains("spinning")) return;
+    refreshBtn.classList.add("spinning");
+    try {
+      await postJson("/api/refresh", {});
+      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+      location.reload();
+    } catch (err) {
+      refreshBtn.classList.remove("spinning");
+      alert("Refresh failed: " + String((err && err.message) || err));
+    }
+  }
+
+  async function checkForUpdates() {
+    if (!refreshBtn) return;
+    try {
+      const r = await fetch("/api/updates");
+      if (!r.ok) return;
+      const data = await r.json();
+      const stale =
+        (data.headSha && data.headSha !== initialHeadSha) ||
+        (data.updatedAt && data.updatedAt !== initialUpdatedAt);
+      refreshBtn.classList.toggle("has-updates", !!stale);
+      if (stale) {
+        refreshBtn.title =
+          "The PR has new activity upstream — click to refresh";
+      }
+    } catch {
+      // Silent; we'll retry on the next tick.
+    }
+  }
+  if (refreshBtn) {
+    // First check after a short delay so the page finishes rendering.
+    setTimeout(checkForUpdates, 2000);
+    setInterval(checkForUpdates, 15000);
+  }
 
   function goToComment(id) {
     closeSubmitModal();
