@@ -851,7 +851,10 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .tree-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
 .tree-rename { color: var(--accent); font-size: 10px; margin-left: 2px; }
 .fn-stats { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-.content { padding: 16px 24px; max-width: 100%; overflow-x: hidden; }
+/* Must stay overflow: visible — any overflow value creates a scroll
+   context that breaks position:sticky on inner .file-header elements.
+   Horizontal scrolling of wide diffs is already handled inside .diff. */
+.content { padding: 16px 24px; min-width: 0; }
 .file { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 24px; background: var(--bg-elev); }
 .file > *:first-child { border-top-left-radius: 6px; border-top-right-radius: 6px; }
 .file > *:last-child { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
