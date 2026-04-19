@@ -1,0 +1,31 @@
+# Dependabot watches our direct deps + GitHub Actions pins and opens PRs when
+# new versions appear. The `cooldown.default-days: 7` gate means Dependabot
+# waits 7 days after a version is published before proposing it — a narrow
+# window of protection against freshly-uploaded malicious releases that are
+# yanked before the cooldown expires. Security advisories bypass the cooldown.
+#
+# Refresh the pinned SHAs in workflows via these PRs: each Dependabot PR
+# updates both the SHA and the trailing tag comment in one hop.
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: scope
