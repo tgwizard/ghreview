@@ -1,13 +1,16 @@
 import http from "node:http";
-import type { PrInfo, PrRef } from "./gh.js";
+import type { AuthedUser, PrInfo, PrRef } from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
+import type { ThreadIndex } from "./threads.js";
 import { renderPage } from "./ui.js";
 
 export interface ServerOptions {
   ref: PrRef;
   pr: PrInfo;
   diff: string;
+  authedUser: AuthedUser | null;
   generatedMatcher: GeneratedMatcher;
+  threadIndex: ThreadIndex;
   port?: number;
 }
 
@@ -37,7 +40,13 @@ export function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
 
       if (url.pathname === prPath || url.pathname === filesPath) {
-        const html = renderPage(opts.pr, opts.diff, opts.generatedMatcher);
+        const html = renderPage(
+          opts.pr,
+          opts.diff,
+          opts.generatedMatcher,
+          opts.authedUser,
+          opts.threadIndex,
+        );
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "no-store",

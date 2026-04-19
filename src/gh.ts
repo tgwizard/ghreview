@@ -6,6 +6,26 @@ export interface PrRef {
   number: number;
 }
 
+export interface AuthedUser {
+  login: string;
+  avatarUrl: string;
+  name: string | null;
+}
+
+export async function fetchAuthedUser(): Promise<AuthedUser | null> {
+  try {
+    const json = await runGh(["api", "/user"]);
+    const data = JSON.parse(json);
+    return {
+      login: data.login,
+      avatarUrl: data.avatar_url,
+      name: data.name ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface PrInfo {
   number: number;
   title: string;
@@ -65,6 +85,54 @@ export async function fetchPrDiff(ref: PrRef): Promise<string> {
     "Accept: application/vnd.github.v3.diff",
     path,
   ]);
+}
+
+export interface ReviewComment {
+  id: number;
+  inReplyToId: number | null;
+  userLogin: string;
+  userAvatarUrl: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl: string;
+  path: string;
+  line: number | null;
+  side: "LEFT" | "RIGHT" | null;
+  originalLine: number | null;
+  originalSide: "LEFT" | "RIGHT" | null;
+  startLine: number | null;
+  startSide: "LEFT" | "RIGHT" | null;
+}
+
+export async function fetchReviewComments(
+  ref: PrRef,
+): Promise<ReviewComment[]> {
+  const path = `/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments?per_page=100`;
+  const json = await runGh(["api", "--paginate", path]);
+  // --paginate concatenates JSON arrays across pages into a single array.
+  const arr = JSON.parse(json) as any[];
+  return arr.map((c) => ({
+    id: c.id,
+    inReplyToId: c.in_reply_to_id ?? null,
+    userLogin: c.user?.login ?? "",
+    userAvatarUrl: c.user?.avatar_url ?? "",
+    body: c.body ?? "",
+    createdAt: c.created_at ?? "",
+    updatedAt: c.updated_at ?? "",
+    htmlUrl: c.html_url ?? "",
+    path: c.path ?? "",
+    line: c.line ?? null,
+    side: normalizeSide(c.side),
+    originalLine: c.original_line ?? null,
+    originalSide: normalizeSide(c.original_side),
+    startLine: c.start_line ?? null,
+    startSide: normalizeSide(c.start_side),
+  }));
+}
+
+function normalizeSide(v: unknown): "LEFT" | "RIGHT" | null {
+  return v === "LEFT" || v === "RIGHT" ? v : null;
 }
 
 export async function fetchFileAtRef(

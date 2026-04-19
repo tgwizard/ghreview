@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import open from "open";
 import {
+  fetchAuthedUser,
   fetchFileAtRef,
   fetchPrDiff,
   fetchPrInfo,
+  fetchReviewComments,
   parsePrUrl,
 } from "./gh.js";
 import { buildGeneratedMatcher } from "./gitattributes.js";
 import { startServer } from "./server.js";
+import { buildThreadIndex } from "./threads.js";
 
 interface Args {
   prUrl: string;
@@ -101,23 +104,33 @@ async function main() {
     `Fetching ${ref.owner}/${ref.repo}#${ref.number} via gh…\n`,
   );
 
-  const pr = await fetchPrInfo(ref);
+  const [pr, authedUser, reviewComments] = await Promise.all([
+    fetchPrInfo(ref),
+    fetchAuthedUser(),
+    fetchReviewComments(ref),
+  ]);
   const [diff, gitattributes] = await Promise.all([
     fetchPrDiff(ref),
     fetchFileAtRef(ref, ".gitattributes", pr.headSha),
   ]);
   const generatedMatcher = buildGeneratedMatcher(gitattributes);
+  const threadIndex = buildThreadIndex(reviewComments);
 
   const server = await startServer({
     ref,
     pr,
     diff,
+    authedUser,
     generatedMatcher,
+    threadIndex,
     port: args.port,
   });
   process.stdout.write(`\n  ${pr.title}\n`);
   process.stdout.write(
     `  +${pr.additions} −${pr.deletions} across ${pr.changedFiles} file${pr.changedFiles === 1 ? "" : "s"}\n`,
+  );
+  process.stdout.write(
+    `  ${threadIndex.all.length} review thread${threadIndex.all.length === 1 ? "" : "s"}\n`,
   );
   process.stdout.write(`\nServing at ${server.prUrl}\n`);
   process.stdout.write(`Press Ctrl+C to stop.\n`);

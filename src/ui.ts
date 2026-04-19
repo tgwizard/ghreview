@@ -1,13 +1,18 @@
 import parseDiff from "parse-diff";
-import type { PrInfo } from "./gh.js";
+import type { AuthedUser, PrInfo } from "./gh.js";
 import type { GeneratedMatcher } from "./gitattributes.js";
+import { renderMarkdown } from "./markdown.js";
+import type { Thread, ThreadIndex } from "./threads.js";
 
 const NOOP_MATCHER: GeneratedMatcher = { isGenerated: () => false };
+const EMPTY_INDEX: ThreadIndex = { all: [], getAt: () => [] };
 
 export function renderPage(
   pr: PrInfo,
   rawDiff: string,
   generatedMatcher: GeneratedMatcher = NOOP_MATCHER,
+  authedUser: AuthedUser | null = null,
+  threadIndex: ThreadIndex = EMPTY_INDEX,
 ): string {
   const files = parseDiff(rawDiff);
   const generatedFlags = files.map((f) =>
@@ -15,18 +20,39 @@ export function renderPage(
   );
   const generatedCount = generatedFlags.filter(Boolean).length;
 
+  const threadsByFile = new Map<string, Thread[]>();
+  for (const t of threadIndex.all) {
+    const list = threadsByFile.get(t.path) ?? [];
+    list.push(t);
+    threadsByFile.set(t.path, list);
+  }
+
   const fileNav = files
     .map((f, i) => {
       const path = displayPath(f);
+      const mPath = matchablePath(f);
       const adds = f.additions ?? 0;
       const dels = f.deletions ?? 0;
       const isGen = generatedFlags[i];
-      return `<li class="${isGen ? "is-generated" : ""}"><a href="#file-${i}"><span class="fn-path">${escapeHtml(path)}</span><span class="fn-stats">${isGen ? '<span class="gen-dot" title="generated">●</span> ' : ""}<span class="add">+${adds}</span> <span class="del">-${dels}</span></span></a></li>`;
+      const threadCount = threadsByFile.get(mPath)?.length ?? 0;
+      const threadBadge =
+        threadCount > 0
+          ? `<span class="fn-threads" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span> `
+          : "";
+      return `<li class="${isGen ? "is-generated" : ""}"><a href="#file-${i}"><span class="fn-path">${escapeHtml(path)}</span><span class="fn-stats">${threadBadge}${isGen ? '<span class="gen-dot" title="generated">●</span> ' : ""}<span class="add">+${adds}</span> <span class="del">-${dels}</span></span></a></li>`;
     })
     .join("");
 
   const fileSections = files
-    .map((f, i) => renderFile(f, i, generatedFlags[i]))
+    .map((f, i) =>
+      renderFile(
+        f,
+        i,
+        generatedFlags[i],
+        threadIndex,
+        threadsByFile.get(matchablePath(f)) ?? [],
+      ),
+    )
     .join("");
 
   const generatedBanner =
@@ -46,6 +72,7 @@ export function renderPage(
   <div class="pr-title-row">
     <span class="pr-state ${pr.state} ${pr.isDraft ? "draft" : ""}">${pr.isDraft ? "Draft" : capitalize(pr.state)}</span>
     <h1><a href="${escapeHtml(pr.url)}" target="_blank" rel="noopener">#${pr.number}</a> ${escapeHtml(pr.title)}</h1>
+    <div class="pr-header-right">${renderAuthChip(authedUser)}</div>
   </div>
   <div class="pr-meta">
     <span><strong>${escapeHtml(pr.author)}</strong> wants to merge</span>
@@ -76,20 +103,45 @@ function renderFile(
   file: parseDiff.File,
   index: number,
   isGenerated: boolean,
+  threadIndex: ThreadIndex,
+  threadsForFile: Thread[],
 ): string {
   const path = displayPath(file);
+  const mPath = matchablePath(file);
   const badge = fileBadge(file);
-  const chunks = file.chunks.map((c) => renderChunk(c)).join("");
-  const body =
+
+  const placedIds = new Set<number>();
+  const chunks = file.chunks
+    .map((c) => renderChunk(c, mPath, threadIndex, placedIds))
+    .join("");
+
+  const unplaced = threadsForFile.filter((t) => !placedIds.has(t.id));
+  const unplacedBlock =
+    unplaced.length > 0
+      ? `<div class="outdated-threads">
+        <div class="outdated-threads__header">${unplaced.length} outdated thread${unplaced.length === 1 ? "" : "s"} on this file</div>
+        ${unplaced.map((t) => renderThread(t)).join("")}
+      </div>`
+      : "";
+
+  const diffBody =
     file.chunks.length === 0
       ? '<div class="file-empty">(no textual diff)</div>'
       : `<div class="diff">${chunks}</div>`;
+  const body = `${diffBody}${unplacedBlock}`;
+
+  const threadCount = threadsForFile.length;
+  const threadBadge =
+    threadCount > 0
+      ? `<span class="file-thread-count" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">💬 ${threadCount}</span>`
+      : "";
 
   const header = `<div class="file-header">
     <div class="file-path">
       ${badge}
       ${isGenerated ? '<span class="badge generated">GENERATED</span>' : ""}
       <span>${escapeHtml(path)}</span>
+      ${threadBadge}
     </div>
     <div class="file-stats">
       ${isGenerated ? '<span class="hint">click to expand</span>' : ""}
@@ -113,23 +165,71 @@ function renderFile(
 </section>`;
 }
 
+function renderAuthChip(user: AuthedUser | null): string {
+  if (!user) {
+    return `<span class="auth-chip auth-chip--none" title="Not signed in to GitHub CLI">not signed in</span>`;
+  }
+  const avatar = user.avatarUrl
+    ? `<img class="auth-avatar" src="${escapeHtml(user.avatarUrl)}&s=40" alt="" />`
+    : "";
+  return `<a class="auth-chip" href="https://github.com/${encodeURIComponent(user.login)}" target="_blank" rel="noopener" title="Signed in to gh CLI as ${escapeHtml(user.login)}">
+    ${avatar}
+    <span class="auth-chip__meta">
+      <span class="auth-chip__label">reviewing as</span>
+      <span class="auth-chip__login">${escapeHtml(user.login)}</span>
+    </span>
+  </a>`;
+}
+
 function matchablePath(file: parseDiff.File): string {
   const to = file.to && file.to !== "/dev/null" ? file.to : "";
   const from = file.from && file.from !== "/dev/null" ? file.from : "";
   return to || from || "";
 }
 
-function renderChunk(chunk: parseDiff.Chunk): string {
+function renderChunk(
+  chunk: parseDiff.Chunk,
+  path: string,
+  threadIndex: ThreadIndex,
+  placedIds: Set<number>,
+): string {
   const rows = chunk.changes
     .map((ch) => {
       const cls =
         ch.type === "add" ? "add" : ch.type === "del" ? "del" : "ctx";
-      const oldNo = "ln1" in ch ? ch.ln1 : "ln" in ch && ch.type === "del" ? ch.ln : "";
-      const newNo = "ln2" in ch ? ch.ln2 : "ln" in ch && ch.type === "add" ? ch.ln : "";
+      const oldNo =
+        "ln1" in ch ? ch.ln1 : "ln" in ch && ch.type === "del" ? ch.ln : null;
+      const newNo =
+        "ln2" in ch ? ch.ln2 : "ln" in ch && ch.type === "add" ? ch.ln : null;
       const marker = ch.type === "add" ? "+" : ch.type === "del" ? "-" : " ";
-      // parse-diff includes the leading +/-/space in `content`; strip it.
       const content = ch.content.length > 0 ? ch.content.slice(1) : "";
-      return `<tr class="row ${cls}"><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}</td><td class="marker">${marker}</td><td class="code">${escapeHtml(content)}</td></tr>`;
+      const row = `<tr class="row ${cls}"><td class="ln ln-old">${oldNo ?? ""}</td><td class="ln ln-new">${newNo ?? ""}</td><td class="marker">${marker}</td><td class="code">${escapeHtml(content)}</td></tr>`;
+
+      const threads: Thread[] = [];
+      const seen = new Set<number>();
+      const pick = (side: "LEFT" | "RIGHT", line: number | null) => {
+        if (line == null) return;
+        for (const t of threadIndex.getAt(path, side, line)) {
+          if (seen.has(t.id) || placedIds.has(t.id)) continue;
+          seen.add(t.id);
+          placedIds.add(t.id);
+          threads.push(t);
+        }
+      };
+      if (ch.type === "add") pick("RIGHT", newNo);
+      else if (ch.type === "del") pick("LEFT", oldNo);
+      else {
+        pick("RIGHT", newNo);
+        pick("LEFT", oldNo);
+      }
+      const threadRows = threads
+        .map(
+          (t) =>
+            `<tr class="thread-row"><td colspan="4">${renderThread(t)}</td></tr>`,
+        )
+        .join("");
+
+      return row + threadRows;
     })
     .join("");
 
@@ -138,6 +238,76 @@ function renderChunk(chunk: parseDiff.Chunk): string {
   <tr class="hunk-header"><td colspan="4">${header}</td></tr>
   ${rows}
 </tbody></table>`;
+}
+
+function renderThread(thread: Thread): string {
+  const comments = [thread.root, ...thread.replies];
+  const commentsHtml = comments.map((c) => renderComment(c)).join("");
+  const outdatedBadge = thread.isOutdated
+    ? '<span class="thread-pill outdated">Outdated</span>'
+    : "";
+  const locationHint =
+    thread.isOutdated && thread.line != null
+      ? `<span class="thread-loc">was ${thread.side === "LEFT" ? "old" : "new"} line ${thread.line}</span>`
+      : "";
+  const replyCount = thread.replies.length;
+  const replyHint =
+    replyCount > 0
+      ? `<span class="thread-pill">${replyCount} repl${replyCount === 1 ? "y" : "ies"}</span>`
+      : "";
+  return `<div class="thread">
+    <div class="thread-header">
+      ${outdatedBadge}
+      ${replyHint}
+      ${locationHint}
+      <a class="thread-link" href="${escapeHtml(thread.root.htmlUrl)}" target="_blank" rel="noopener" title="Open on GitHub">↗</a>
+    </div>
+    ${commentsHtml}
+  </div>`;
+}
+
+function renderComment(c: {
+  userLogin: string;
+  userAvatarUrl: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl: string;
+}): string {
+  const avatar = c.userAvatarUrl
+    ? `<img class="comment-avatar" src="${escapeHtml(c.userAvatarUrl)}&s=40" alt="" />`
+    : `<span class="comment-avatar comment-avatar--none"></span>`;
+  const edited =
+    c.updatedAt && c.updatedAt !== c.createdAt
+      ? ` <span class="comment-edited" title="edited ${escapeHtml(c.updatedAt)}">(edited)</span>`
+      : "";
+  return `<article class="comment">
+    ${avatar}
+    <div class="comment-body">
+      <div class="comment-meta">
+        <a class="comment-author" href="https://github.com/${encodeURIComponent(c.userLogin)}" target="_blank" rel="noopener">${escapeHtml(c.userLogin)}</a>
+        <span class="comment-time" title="${escapeHtml(c.createdAt)}">${formatTime(c.createdAt)}</span>
+        ${edited}
+      </div>
+      <div class="comment-md">${renderMarkdown(c.body)}</div>
+    </div>
+  </article>`;
+}
+
+function formatTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = Date.now();
+  const diffMs = now - d.getTime();
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return d.toISOString().slice(0, 10);
 }
 
 function displayPath(file: parseDiff.File): string {
@@ -193,7 +363,15 @@ a:hover { text-decoration: underline; }
 code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--bg-elev); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
 .pr-header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 0; z-index: 10; }
 .pr-title-row { display: flex; align-items: center; gap: 12px; }
-.pr-title-row h1 { margin: 0; font-size: 18px; font-weight: 500; }
+.pr-title-row h1 { margin: 0; font-size: 18px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.auth-chip { display: inline-flex; align-items: center; gap: 8px; padding: 3px 10px 3px 3px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); color: var(--text); font-size: 12px; text-decoration: none; }
+.auth-chip:hover { background: var(--bg-hover); text-decoration: none; border-color: var(--accent); }
+.auth-chip--none { padding: 4px 10px; background: transparent; color: var(--text-dim); cursor: default; }
+.auth-avatar { width: 22px; height: 22px; border-radius: 50%; display: block; }
+.auth-chip__meta { display: flex; flex-direction: column; line-height: 1.1; }
+.auth-chip__label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.auth-chip__login { font-weight: 600; }
 .pr-title-row h1 a { color: var(--text-dim); margin-right: 8px; font-weight: 400; }
 .pr-state { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: #238636; color: white; }
 .pr-state.closed { background: #8957e5; }
@@ -232,6 +410,41 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .gen-banner code { font-size: 11px; }
 .file-nav li.is-generated a { color: var(--text-dim); }
 .gen-dot { color: var(--text-dim); }
+.fn-threads { color: var(--accent); margin-right: 6px; }
+.file-thread-count { color: var(--accent); font-size: 12px; margin-left: 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+.outdated-threads { border-top: 1px solid var(--border); background: var(--bg-elev); padding: 10px 14px; }
+.outdated-threads__header { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+.thread-row td { padding: 8px 12px 8px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.thread { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 0; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+.thread-header { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg-hover); border-radius: 6px 6px 0 0; font-size: 12px; }
+.thread-pill { background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); padding: 1px 8px; border-radius: 999px; font-size: 11px; }
+.thread-pill.outdated { background: rgba(210, 153, 34, 0.15); color: #d29922; border-color: rgba(210, 153, 34, 0.4); }
+.thread-loc { color: var(--text-dim); font-size: 11px; }
+.thread-link { margin-left: auto; color: var(--text-dim); text-decoration: none; font-size: 14px; }
+.thread-link:hover { color: var(--accent); }
+.comment { display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.comment:first-of-type { border-top: none; }
+.comment-avatar { width: 28px; height: 28px; border-radius: 50%; display: block; }
+.comment-avatar--none { background: var(--bg-hover); }
+.comment-body { min-width: 0; }
+.comment-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; font-size: 12px; }
+.comment-author { color: var(--text); font-weight: 600; }
+.comment-time { color: var(--text-dim); font-size: 11px; }
+.comment-edited { color: var(--text-dim); font-size: 11px; font-style: italic; }
+.comment-md { font-size: 13px; line-height: 1.5; color: var(--text); word-wrap: break-word; }
+.comment-md p { margin: 0 0 8px; }
+.comment-md p:last-child { margin-bottom: 0; }
+.comment-md code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+.comment-md pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 8px 0; }
+.comment-md pre code { background: transparent; padding: 0; font-size: 12px; line-height: 1.45; }
+.comment-md blockquote { margin: 0 0 8px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--text-dim); }
+.comment-md ul, .comment-md ol { margin: 0 0 8px; padding-left: 22px; }
+.comment-md img { max-width: 100%; border-radius: 4px; }
+.comment-md a { color: var(--accent); }
+.comment-md table { border-collapse: collapse; margin: 8px 0; }
+.comment-md th, .comment-md td { border: 1px solid var(--border); padding: 4px 8px; }
+.comment-md hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.comment-md h1, .comment-md h2, .comment-md h3, .comment-md h4 { margin: 8px 0 4px; font-weight: 600; }
 .file-empty { padding: 20px; color: var(--text-dim); text-align: center; font-style: italic; }
 .diff { background: var(--bg); overflow-x: auto; }
 .chunk { border-collapse: collapse; width: 100%; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; }
