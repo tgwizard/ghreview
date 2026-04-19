@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import open from "open";
 import {
   fetchAuthedUser,

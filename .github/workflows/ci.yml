@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # `npm ci` enforces the committed package-lock.json exactly and fails
+      # if any dependency resolves to a different hash.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: |
+          test -s dist/cli.js
+          head -1 dist/cli.js | grep -q '^#!/usr/bin/env node'

@@ -1,0 +1,45 @@
+name: Publish to npm
+
+# Publishes with `--provenance` so npm records a signed attestation linking
+# this version to this GitHub workflow + commit. Users can verify with
+# `npm audit signatures` after install. Requires that the npm package be
+# configured with a trusted publisher pointing at this repo/workflow (set
+# at npmjs.com → Package settings → Publishing access → Trusted publishers).
+#
+# For maximum supply-chain hardening, replace the version tags below with
+# full commit SHAs (see https://docs.github.com/en/actions/security-for-github-actions
+# — an action repo can retag, a commit SHA cannot be moved).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # Required for npm provenance via GitHub OIDC.
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install (strict lockfile)
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish
+        run: npm publish --provenance --access public

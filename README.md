@@ -59,12 +59,31 @@ Public PRs you can point ghreview at:
 - v2: expand nearby context lines, syntax highlighting
 - v2: show PR auto-merge status, safety prompts for approval
 
+## Supply-chain security
+
+`npx ghreview` runs code on your machine, so the install path is hardened against attacks on the package graph.
+
+- **Zero runtime dependencies.** `package.json` declares `"dependencies": {}`. The build step (`esbuild`) inlines every runtime library into a single `dist/cli.js`. No dependency resolution happens at install time, so a compromised new version of `marked` / `sanitize-html` / `highlight.js` / etc. can never ship to you between releases.
+- **Reproducible builds.** `devDependencies` are pinned to exact versions, no `^` ranges.
+- **Published with provenance.** Releases go out via a GitHub Actions workflow (`.github/workflows/publish.yml`) using `npm publish --provenance`. Each version has a cryptographic attestation linking it to the source commit and the workflow run that built it.
+
+Verify an installed copy:
+
+```sh
+npm audit signatures
+```
+
+If the provenance check fails, don't run the binary.
+
+For the strictest posture, pin the exact version: `npx ghreview@0.0.1 <pr-url>`.
+
 ## Development
 
 ```sh
 npm install
 npm run dev -- https://github.com/owner/repo/pull/123
-npm run build
+npm run build       # bundles to dist/cli.js
+npm run typecheck   # tsc --noEmit
 ```
 
 ## License
