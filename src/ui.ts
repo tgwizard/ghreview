@@ -149,7 +149,7 @@ function renderFile(
     file.chunks.length === 0
       ? '<div class="file-empty">(no textual diff)</div>'
       : `<div class="diff">${chunks}</div>`;
-  const body = `${diffBody}${unplacedBlock}`;
+  const body = `${unplacedBlock}${diffBody}`;
 
   const threadCount = threadsForFile.length;
   const threadBadge =
@@ -574,7 +574,7 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .gen-dot { color: var(--text-dim); }
 .fn-threads { color: var(--accent); margin-right: 6px; }
 .file-thread-count { color: var(--accent); font-size: 12px; margin-left: 4px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-.outdated-threads { border-top: 1px solid var(--border); background: var(--bg-elev); padding: 10px 14px; }
+.outdated-threads { border-bottom: 1px solid var(--border); background: var(--bg-elev); padding: 10px 14px; }
 .outdated-threads__header { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
 .thread-row td { padding: 8px 12px 8px 60px; background: var(--bg); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .thread { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 0; margin: 4px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
