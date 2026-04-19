@@ -32,6 +32,13 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Use npm 11+ (for Trusted Publisher OIDC upload auth)
+        # Node 22 ships with npm 10.x; npm's OIDC-only publish auth for
+        # Trusted Publishers landed in 11.5.1. Without this bump the
+        # `--provenance` signing works but the PUT falls back to an
+        # empty NODE_AUTH_TOKEN and 404s.
+        run: npm install -g npm@latest
+
       - name: Install (strict lockfile)
         run: npm ci
 
