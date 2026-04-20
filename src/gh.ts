@@ -341,6 +341,12 @@ export interface ThreadMetadata {
   nodeId: string;
   isResolved: boolean;
   isOutdated: boolean;
+  // GraphQL is the source of truth for pending comments' position —
+  // REST `/pulls/{n}/reviews/{id}/comments` returns `line` and `side` as
+  // null for not-yet-submitted comments.
+  line: number | null;
+  originalLine: number | null;
+  side: DiffSide;
 }
 
 export interface ReviewState {
@@ -387,6 +393,9 @@ async function fetchThreadMetadata(
               id
               isResolved
               isOutdated
+              line
+              originalLine
+              diffSide
               comments(first:100){ nodes{ databaseId } }
             }
           }
@@ -407,10 +416,15 @@ async function fetchThreadMetadata(
       const conn = data.repository?.pullRequest?.reviewThreads;
       if (!conn) break;
       for (const t of conn.nodes ?? []) {
+        const side: DiffSide = t.diffSide === "LEFT" ? "LEFT" : "RIGHT";
         const meta: ThreadMetadata = {
           nodeId: t.id,
           isResolved: !!t.isResolved,
           isOutdated: !!t.isOutdated,
+          line: typeof t.line === "number" ? t.line : null,
+          originalLine:
+            typeof t.originalLine === "number" ? t.originalLine : null,
+          side,
         };
         for (const c of t.comments?.nodes ?? []) {
           if (typeof c.databaseId === "number") out.set(c.databaseId, meta);
