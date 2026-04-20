@@ -15,25 +15,61 @@ interface Rule {
   value: boolean;
 }
 
+// Package-manager lock files — always treated as generated, same as if the
+// repo's .gitattributes had `<file> linguist-generated=true`. Matched by
+// basename at any depth. A user's explicit `-linguist-generated` /
+// `linguist-generated=false` rule in .gitattributes still overrides this
+// (later rules win).
+const LOCK_FILES: readonly string[] = [
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "bun.lockb",
+  "bun.lock",
+  "Cargo.lock",
+  "Gemfile.lock",
+  "Pipfile.lock",
+  "poetry.lock",
+  "uv.lock",
+  "composer.lock",
+  "go.sum",
+  "Podfile.lock",
+  "packages.lock.json",
+  "mix.lock",
+  "flake.lock",
+  "pubspec.lock",
+  "Package.resolved",
+];
+
 export function buildGeneratedMatcher(
   gitattributesContent: string | null,
 ): GeneratedMatcher {
-  if (!gitattributesContent) return { isGenerated: () => false };
-
   const rules: Rule[] = [];
-  for (const rawLine of gitattributesContent.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const parts = line.split(/\s+/);
-    if (parts.length < 2) continue;
-    const pattern = parts[0];
-    const attrs = parts.slice(1);
-    const value = linguistGeneratedValue(attrs);
-    if (value === undefined) continue;
-    const regex = patternToRegex(pattern);
-    if (!regex) continue;
-    rules.push({ regex, value });
+  // Hard-coded lock-file rules go first; user's .gitattributes can still
+  // negate them (rules are applied in order, last match wins).
+  for (const name of LOCK_FILES) {
+    const regex = patternToRegex(name);
+    if (regex) rules.push({ regex, value: true });
   }
+
+  if (gitattributesContent) {
+    for (const rawLine of gitattributesContent.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const parts = line.split(/\s+/);
+      if (parts.length < 2) continue;
+      const pattern = parts[0];
+      const attrs = parts.slice(1);
+      const value = linguistGeneratedValue(attrs);
+      if (value === undefined) continue;
+      const regex = patternToRegex(pattern);
+      if (!regex) continue;
+      rules.push({ regex, value });
+    }
+  }
+
+  if (rules.length === 0) return { isGenerated: () => false };
 
   return {
     isGenerated(path: string) {

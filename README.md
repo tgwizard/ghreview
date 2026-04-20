@@ -9,32 +9,69 @@ A local web UI for reviewing large GitHub pull requests. Spins up a small HTTP s
 
 ## Usage
 
+Quick look at one PR:
+
 ```sh
 npx @tgwizard/ghreview https://github.com/owner/repo/pull/123
 ```
 
-This fetches the PR metadata and unified diff via `gh`, starts a local web server on a random free port (at a path matching GitHub's — e.g. `http://127.0.0.1:PORT/owner/repo/pull/123`), and opens the rendered review page in your default browser.
+This starts a local server on port 7766 (override with `--port` or `GHREVIEW_PORT`), fetches PR data via `gh`, and opens the rendered review page in your browser.
 
-Files marked `linguist-generated=true` in the repo's `.gitattributes` (at the PR head) are collapsed by default, like GitHub's Files Changed view.
+### Long-running mode
+
+The server is **multi-PR** and lazy-loads. Leave one instance running in a terminal tab and every subsequent invocation hands off to it without rebinding:
+
+```sh
+# Terminal 1 — run once, leave open:
+npx @tgwizard/ghreview
+
+# Any other terminal, anytime:
+npx @tgwizard/ghreview https://github.com/owner/repo/pull/123
+npx @tgwizard/ghreview https://github.com/owner/repo/pull/456
+```
+
+The second and third invocations detect the running server (via a sentinel `/__ghreview__` endpoint), just open the browser at the right URL, and exit immediately. New PRs lazy-load on first visit — the tab shows a spinner for the 1–3 s fetch, then the rendered page.
+
+The landing page at [http://127.0.0.1:7766/](http://127.0.0.1:7766/) lists every loaded PR and accepts either a full GitHub URL or a `owner/repo#123` shortcut.
+
+### Bookmarklet
+
+Drag this into your bookmarks bar to open any GitHub PR tab in your local ghreview instead:
+
+```js
+javascript:(()=>{const m=location.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)/);if(!m)return alert('Not a GitHub PR page');location.href='http://127.0.0.1:7766/'+m[1]+'/'+m[2]+'/pull/'+m[3]+location.hash;})();
+```
+
+Name it something like **"Open in ghreview"**. Click it on any `github.com/…/pull/…` page — it forwards the fragment too, so `#issuecomment-456` or `#discussion_r789` survives the trip and scrolls to the right place.
 
 ### Options
 
 ```
--p, --port <n>   Port to bind (default: random free port)
+-p, --port <n>   Port to bind (default: 7766; GHREVIEW_PORT overrides)
     --no-open    Don't open the browser automatically
 -h, --help       Show help
 -v, --version    Show version
 ```
 
+### Generated files
+
+Files are collapsed by default when:
+
+- the repo's `.gitattributes` marks them `linguist-generated` / `linguist-generated=true`, **or**
+- they match a built-in lock-file list: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock(b)`, `Cargo.lock`, `Gemfile.lock`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `composer.lock`, `go.sum`, `Podfile.lock`, `packages.lock.json`, `mix.lock`, `flake.lock`, `pubspec.lock`, `Package.resolved`, `npm-shrinkwrap.json`.
+
+A repo's `.gitattributes` can still override either with `-linguist-generated` / `linguist-generated=false`.
+
 ### Endpoints
 
 Once running, the server exposes:
 
-- `/` → redirects to the PR path
-- `/<owner>/<repo>/pull/<N>` — the rendered review UI
+- `/` — landing page listing loaded PRs
+- `/<owner>/<repo>/pull/<N>` — rendered review UI (lazy-loads on first hit)
 - `/<owner>/<repo>/pull/<N>/files` — same (GitHub-style alias)
 - `/<owner>/<repo>/pull/<N>.json` — PR metadata as JSON
 - `/<owner>/<repo>/pull/<N>.diff` — raw unified diff
+- `/__ghreview__` — identity ping (used by the hand-off)
 
 ## Try it
 
@@ -47,17 +84,6 @@ Public PRs you can point ghreview at:
 | [`kubernetes/kubernetes#126901`](https://github.com/kubernetes/kubernetes/pull/126901) | +1 / −1, 1 file | Generated-file collapse (matches `**/types_swagger_doc_generated.go`) |
 | [`kubernetes/kubernetes#132663`](https://github.com/kubernetes/kubernetes/pull/132663) | +19,503 / −3,298, 927 files | Stress test — nearly a thousand files |
 | [`kubernetes/kubernetes#138350`](https://github.com/kubernetes/kubernetes/pull/138350) | +38,092, 186 files | Huge single-PR diff |
-
-## Status
-
-**v0** — renders the unified diff with file navigation, add/delete line counts, and per-file status badges. Generated files (per `.gitattributes`) collapse by default. Read-only.
-
-### Roadmap
-
-- v1: show existing inline review threads
-- v1: write pending inline comments, submit a review (comment / approve / request changes)
-- v2: expand nearby context lines, syntax highlighting
-- v2: show PR auto-merge status, safety prompts for approval
 
 ## Supply-chain security
 
