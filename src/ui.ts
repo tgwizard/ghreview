@@ -1206,6 +1206,40 @@ const CLIENT_SCRIPT = `
     });
   }
 
+  // Writes trigger a full page reload so the server-rendered HTML reflects
+  // the new state. Raw scrollY doesn't line up once a new thread row is
+  // inserted (page height changes), so we anchor to a specific diff row
+  // visible near the top of the viewport and restore to the same pixel
+  // offset after reload.
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+
+  function firstVisibleRow() {
+    const x = Math.max(100, Math.min(window.innerWidth - 200, window.innerWidth / 2));
+    for (let y = 140; y < 420; y += 40) {
+      const el = document.elementFromPoint(x, y);
+      if (!el) continue;
+      const row = el.closest ? el.closest("tr.row[data-path]") : null;
+      if (row) return row;
+    }
+    return null;
+  }
+
+  function reloadKeepingScroll() {
+    const row = firstVisibleRow();
+    if (row) {
+      const rect = row.getBoundingClientRect();
+      sessionStorage.setItem("ghreview:anchor", JSON.stringify({
+        path: row.dataset.path,
+        side: row.dataset.side,
+        line: row.dataset.line,
+        y: rect.top,
+      }));
+    } else {
+      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
+    }
+    location.reload();
+  }
+
   // --- Add-comment form ---
   function openCommentForm(row) {
     // Avoid stacking multiple forms for the same row.
@@ -1253,8 +1287,7 @@ const CLIENT_SCRIPT = `
           side: row.dataset.side,
           body,
         });
-        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-        location.reload();
+        reloadKeepingScroll();
       } catch (err) {
         errEl.textContent = String((err && err.message) || err);
         errEl.classList.add("visible");
@@ -1322,8 +1355,7 @@ const CLIENT_SCRIPT = `
         api("/api/thread/" + encodeURIComponent(nodeId) + "/" + (resolve ? "resolve" : "unresolve")),
         {},
       );
-      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-      location.reload();
+      reloadKeepingScroll();
     } catch (err) {
       btn.disabled = false;
       btn.textContent = prev;
@@ -1395,8 +1427,7 @@ const CLIENT_SCRIPT = `
     refreshBtn.classList.add("spinning");
     try {
       await postJson(api("/api/refresh"), {});
-      sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-      location.reload();
+      reloadKeepingScroll();
     } catch (err) {
       refreshBtn.classList.remove("spinning");
       alert("Refresh failed: " + String((err && err.message) || err));
@@ -1492,8 +1523,7 @@ const CLIENT_SCRIPT = `
         await postJson(api("/api/comment/" + encodeURIComponent(rootId) + "/reply"), {
           body,
         });
-        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-        location.reload();
+        reloadKeepingScroll();
       } catch (err) {
         errEl.textContent = String((err && err.message) || err);
         errEl.classList.add("visible");
@@ -1556,8 +1586,7 @@ const CLIENT_SCRIPT = `
           const data = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
         });
-        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-        location.reload();
+        reloadKeepingScroll();
       } catch (err) {
         errEl.textContent = String((err && err.message) || err);
         errEl.classList.add("visible");
@@ -1608,8 +1637,7 @@ const CLIENT_SCRIPT = `
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-        location.reload();
+        reloadKeepingScroll();
       } catch (err) {
         t.textContent = "Yes";
         t.disabled = false;
@@ -1618,12 +1646,30 @@ const CLIENT_SCRIPT = `
     });
   }
 
-  // Restore scroll after page reload.
-  const savedScroll = sessionStorage.getItem("ghreview:scrollY");
-  if (savedScroll) {
-    sessionStorage.removeItem("ghreview:scrollY");
-    window.scrollTo(0, Number(savedScroll));
-  }
+  // Restore scroll after page reload: prefer the row-anchor (pixel-perfect
+  // even when the page height changed from new comments) and fall back to
+  // saved scrollY for reloads not triggered from the Files tab.
+  (function restoreScroll(){
+    const anchor = sessionStorage.getItem("ghreview:anchor");
+    if (anchor) {
+      sessionStorage.removeItem("ghreview:anchor");
+      try {
+        const a = JSON.parse(anchor);
+        const sel = 'tr.row[data-path="' + CSS.escape(a.path) + '"][data-side="' + a.side + '"][data-line="' + a.line + '"]';
+        const el = document.querySelector(sel);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          window.scrollBy(0, rect.top - a.y);
+          return;
+        }
+      } catch {}
+    }
+    const y = sessionStorage.getItem("ghreview:scrollY");
+    if (y) {
+      sessionStorage.removeItem("ghreview:scrollY");
+      window.scrollTo(0, Number(y));
+    }
+  })();
 
   // --- Tabs ---
   const TABS = ["conversation", "commits", "files"];
@@ -1825,8 +1871,7 @@ const CLIENT_SCRIPT = `
     btn.textContent = "Submitting…";
     postJson(api("/api/submit"), { event, body })
       .then(() => {
-        sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
-        location.reload();
+        reloadKeepingScroll();
       })
       .catch((err) => {
         errEl.textContent = String((err && err.message) || err);
