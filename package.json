@@ -1,6 +1,6 @@
 {
   "name": "@tgwizard/ghreview",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "A local web UI for reviewing large GitHub PRs, backed by the gh CLI.",
   "type": "module",
   "bin": {
