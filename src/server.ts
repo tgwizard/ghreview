@@ -241,7 +241,19 @@ export async function startServer(
       const d = s.state.kind === "ready" ? s.state.data : null;
 
       // --- Routes that work regardless of loading state ---
-      if (req.method === "GET" && (suffix === "" || suffix === "/files")) {
+      // Accept GitHub-compatible sub-paths as aliases for the PR page so
+      // pasting /pull/N/files, /pull/N/changes, /pull/N/commits etc. into
+      // the browser lands on the rendered page. The client handles
+      // tab/anchor switching via location.hash.
+      const htmlAliases = new Set([
+        "",
+        "/files",
+        "/changes",
+        "/commits",
+        "/conversation",
+        "/checks",
+      ]);
+      if (req.method === "GET" && htmlAliases.has(suffix)) {
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "no-store",
@@ -557,7 +569,7 @@ function jump(ev){
   ev.preventDefault();
   const v = document.getElementById("input").value.trim();
   if (!v) return false;
-  const m = v.match(/github\\.com[/:]([^/]+)\\/([^/]+?)(?:\\.git)?\\/pull\\/(\\d+)(#.*)?$/)
+  const m = v.match(/github\\.com[/:]([^/]+)\\/([^/]+?)(?:\\.git)?\\/pull\\/(\\d+)(?:\\/[^#]*)?(#.*)?$/)
     || v.match(/^([^/\\s]+)\\/([^#\\s]+)#(\\d+)(#.*)?$/);
   if (!m) { alert("Couldn't parse that — expected a GitHub PR URL or owner/repo#N"); return false; }
   location.href = "/" + encodeURIComponent(m[1]) + "/" + encodeURIComponent(m[2]) + "/pull/" + m[3] + (m[4] || "");
