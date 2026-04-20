@@ -152,11 +152,17 @@ async function main() {
   })();
 
   const server = await startServer({ ref, ready, port: args.port });
-  process.stdout.write(`\nServing at ${server.prUrl}\n`);
+  // Preserve any fragment from the input URL (e.g. #issuecomment-123 or
+  // #discussion_r456) so deep-link targets work when the client script
+  // translates them into local scroll targets.
+  const hashIdx = args.prUrl.indexOf("#");
+  const hash = hashIdx >= 0 ? args.prUrl.slice(hashIdx) : "";
+  const openUrl = server.prUrl + hash;
+  process.stdout.write(`\nServing at ${openUrl}\n`);
   process.stdout.write(`Press Ctrl+C to stop.\n`);
 
   if (!args.noOpen) {
-    open(server.prUrl).catch(() => {
+    open(openUrl).catch(() => {
       // Non-fatal; URL is still printed.
     });
   }

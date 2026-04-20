@@ -440,7 +440,7 @@ function renderConversationPanel(
         c.updatedAt && c.updatedAt !== c.createdAt
           ? ` <span class="comment-edited" title="edited ${escapeHtml(c.updatedAt)}">(edited)</span>`
           : "";
-      return `<article class="conv-item">
+      return `<article class="conv-item" id="issuecomment-${c.id}">
         ${avatarImg(c.userAvatarUrl, "comment-avatar")}
         <div class="conv-item-body">
           <div class="comment-meta">
@@ -1148,7 +1148,7 @@ details.thread.resolved > .comment, details.thread.resolved > .thread-reply-foot
 .modal-pending-body { font-size: 12px; color: var(--text); line-height: 1.4; white-space: pre-wrap; }
 .modal-pending-empty { color: var(--text-dim); font-size: 12px; text-align: center; padding: 12px 0 16px; }
 @keyframes flash-highlight { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
-.comment.flash-highlight { animation: flash-highlight 1.6s ease-out; }
+.flash-highlight { animation: flash-highlight 1.6s ease-out; }
 .modal-label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
 .modal-textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: inherit; font-size: 13px; resize: vertical; }
 .modal-textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
@@ -1627,6 +1627,32 @@ const CLIENT_SCRIPT = `
   });
   const initial = location.hash.replace(/^#/, "");
   activateTab(TABS.indexOf(initial) >= 0 ? initial : "files");
+
+  // Translate GitHub's anchor shapes into local scroll targets. Runs after
+  // the tab is active so the element is in the visible panel.
+  (function deepLinkFromHash(){
+    const h = location.hash;
+    if (!h) return;
+    // Inline review comment: #discussion_rNNN or #rNNN
+    const reviewMatch = h.match(/^#(?:discussion_)?r(\\d+)$/);
+    if (reviewMatch) {
+      setTimeout(() => goToComment(reviewMatch[1]), 50);
+      return;
+    }
+    // Issue-level comment: #issuecomment-NNN
+    const issueMatch = h.match(/^#issuecomment-(\\d+)$/);
+    if (issueMatch) {
+      activateTab("conversation");
+      setTimeout(() => {
+        const el = document.getElementById("issuecomment-" + issueMatch[1]);
+        if (!el) return;
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.remove("flash-highlight");
+        void el.offsetWidth;
+        el.classList.add("flash-highlight");
+      }, 50);
+    }
+  })();
 
   // --- Sidebar resize ---
   (function initSidebarResize(){

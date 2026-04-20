@@ -473,7 +473,7 @@ body { display: flex; align-items: center; justify-content: center; }
     try {
       const r = await fetch("/api/ready");
       const d = await r.json();
-      if (d.ready) location.replace(target);
+      if (d.ready) location.replace(target + location.hash);
       else if (d.error) document.querySelector(".msg").textContent = "Error: " + d.error;
     } catch {}
   };
