@@ -54,6 +54,7 @@ export function renderPage(
   issueComments: IssueComment[] = [],
   checks: ChecksRollup | null = null,
   commits: PrCommit[] = [],
+  prBasePath: string = "",
 ): string {
   const files = parseDiff(rawDiff);
   const fileInfos = files.map((f, i) => {
@@ -110,7 +111,7 @@ export function renderPage(
 <title>${escapeHtml(`${repoSlug}#${pr.number} ${pr.title}`)} · ghreview</title>
 <style>${STYLES}</style>
 </head>
-<body>
+<body data-pr-base="${escapeHtml(prBasePath)}">
 <header class="pr-header">
   <div class="pr-title-row">
     <span class="pr-state ${pr.state} ${pr.isDraft ? "draft" : ""}">${pr.isDraft ? "Draft" : capitalize(pr.state)}</span>
@@ -1173,6 +1174,12 @@ const CLIENT_SCRIPT = `
 (function(){
   const $ = (s, r) => (r||document).querySelector(s);
 
+  // Every page serves one specific PR, but the server is multi-PR — so
+  // API calls must be prefixed with this session's base path, e.g.
+  // /stilla/stilla/pull/6092 + /api/comment.
+  const PR_BASE = document.body.getAttribute("data-pr-base") || "";
+  const api = (suffix) => PR_BASE + suffix;
+
   function postJson(url, body) {
     return fetch(url, {
       method: "POST",
@@ -1226,7 +1233,7 @@ const CLIENT_SCRIPT = `
       submitBtn.disabled = true;
       submitBtn.textContent = "Sending…";
       try {
-        await postJson("/api/comment", {
+        await postJson(api("/api/comment"), {
           path: row.dataset.path,
           line: Number(row.dataset.line),
           side: row.dataset.side,
@@ -1298,7 +1305,7 @@ const CLIENT_SCRIPT = `
     btn.textContent = resolve ? "Resolving…" : "Reopening…";
     try {
       await postJson(
-        "/api/thread/" + encodeURIComponent(nodeId) + "/" + (resolve ? "resolve" : "unresolve"),
+        api("/api/thread/" + encodeURIComponent(nodeId) + "/" + (resolve ? "resolve" : "unresolve")),
         {},
       );
       sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
@@ -1331,7 +1338,7 @@ const CLIENT_SCRIPT = `
       const qs = new URLSearchParams({
         path, side, start: String(start), end: String(end), delta: String(delta),
       });
-      const r = await fetch("/api/context?" + qs.toString());
+      const r = await fetch(api("/api/context?" + qs.toString()));
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
       if (data.html) {
@@ -1373,7 +1380,7 @@ const CLIENT_SCRIPT = `
     if (refreshBtn.classList.contains("spinning")) return;
     refreshBtn.classList.add("spinning");
     try {
-      await postJson("/api/refresh", {});
+      await postJson(api("/api/refresh"), {});
       sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
       location.reload();
     } catch (err) {
@@ -1385,7 +1392,7 @@ const CLIENT_SCRIPT = `
   async function checkForUpdates() {
     if (!refreshBtn) return;
     try {
-      const r = await fetch("/api/updates");
+      const r = await fetch(api("/api/updates"));
       if (!r.ok) return;
       const data = await r.json();
       const stale =
@@ -1468,7 +1475,7 @@ const CLIENT_SCRIPT = `
       submitBtn.disabled = true;
       submitBtn.textContent = "Sending…";
       try {
-        await postJson("/api/comment/" + encodeURIComponent(rootId) + "/reply", {
+        await postJson(api("/api/comment/" + encodeURIComponent(rootId) + "/reply"), {
           body,
         });
         sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
@@ -1527,7 +1534,7 @@ const CLIENT_SCRIPT = `
       submitBtn.textContent = "Saving…";
       errEl.classList.remove("visible");
       try {
-        await fetch("/api/comment/" + encodeURIComponent(id), {
+        await fetch(api("/api/comment/" + encodeURIComponent(id)), {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ body: ta.value }),
@@ -1582,7 +1589,7 @@ const CLIENT_SCRIPT = `
       t.textContent = "Deleting…";
       t.disabled = true;
       try {
-        const r = await fetch("/api/comment/" + encodeURIComponent(id), {
+        const r = await fetch(api("/api/comment/" + encodeURIComponent(id)), {
           method: "DELETE",
         });
         const data = await r.json().catch(() => ({}));
@@ -1774,7 +1781,7 @@ const CLIENT_SCRIPT = `
   }
 
   function fetchAutoMerge() {
-    fetch("/api/auto-merge")
+    fetch(api("/api/auto-merge"))
       .then((r) => r.json())
       .then((data) => renderAutoMerge(data))
       .catch((err) =>
@@ -1788,7 +1795,7 @@ const CLIENT_SCRIPT = `
       btn.disabled = true;
       btn.textContent = "Disabling…";
     }
-    postJson("/api/disable-auto-merge", {})
+    postJson(api("/api/disable-auto-merge"), {})
       .then((state) => renderAutoMerge(state))
       .catch((err) =>
         renderAutoMerge({ error: (err && err.message) || String(err) }),
@@ -1802,7 +1809,7 @@ const CLIENT_SCRIPT = `
     const btn = modal.querySelector('[data-action="submit-review"]');
     btn.disabled = true;
     btn.textContent = "Submitting…";
-    postJson("/api/submit", { event, body })
+    postJson(api("/api/submit"), { event, body })
       .then(() => {
         sessionStorage.setItem("ghreview:scrollY", String(window.scrollY));
         location.reload();

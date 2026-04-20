@@ -1,27 +1,23 @@
 import open from "open";
-import {
-  fetchAuthedUser,
-  fetchChecksRollup,
-  fetchFileAtRef,
-  fetchIssueComments,
-  fetchPrCommits,
-  fetchPrDiff,
-  fetchPrInfo,
-  loadReviewState,
-  parsePrUrl,
-} from "./gh.js";
-import { pluralize } from "./html.js";
-import { buildGeneratedMatcher } from "./gitattributes.js";
-import { startServer } from "./server.js";
+import { parsePrUrl } from "./gh.js";
+import { IDENTITY_PATH, startServer } from "./server.js";
+
+const DEFAULT_PORT = 7766;
 
 interface Args {
-  prUrl: string;
-  port?: number;
+  prUrl: string | null;
+  port: number;
   noOpen: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Partial<Args> = { noOpen: false };
+  let port = DEFAULT_PORT;
+  const envPort = process.env.GHREVIEW_PORT;
+  if (envPort) {
+    const n = Number(envPort);
+    if (Number.isInteger(n) && n > 0 && n <= 65535) port = n;
+  }
+  const args: Partial<Args> = { noOpen: false, port };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -51,16 +47,12 @@ function parseArgs(argv: string[]): Args {
       positional.push(a);
     }
   }
-  if (positional.length === 0) {
-    printHelp();
-    process.exit(1);
-  }
   if (positional.length > 1) {
-    throw new Error(`Too many arguments. Expected one PR URL.`);
+    throw new Error(`Too many arguments. Expected one PR URL or none.`);
   }
   return {
-    prUrl: positional[0],
-    port: args.port,
+    prUrl: positional[0] ?? null,
+    port: args.port ?? DEFAULT_PORT,
     noOpen: args.noOpen ?? false,
   };
 }
@@ -70,13 +62,19 @@ function printHelp() {
     `ghreview — review large GitHub PRs in a local web UI.
 
 Usage:
-  ghreview <pr-url> [options]
+  ghreview [pr-url] [options]
+
+The first invocation starts a local server that can serve any PR on demand.
+Subsequent invocations detect the running server and just open the browser
+against it, so you can leave ghreview running in one terminal tab and invoke
+ghreview repeatedly from others without restarting.
 
 Arguments:
-  <pr-url>       GitHub PR URL, e.g. https://github.com/owner/repo/pull/123
+  [pr-url]         GitHub PR URL, e.g. https://github.com/owner/repo/pull/123.
+                   Omit to launch the empty index page.
 
 Options:
-  -p, --port <n>   Port to bind (default: random free port)
+  -p, --port <n>   Port to bind (default: 7766; GHREVIEW_PORT overrides)
       --no-open    Don't open the browser automatically
   -h, --help       Show this help
   -v, --version    Show version
@@ -94,6 +92,32 @@ function printVersion() {
   process.stdout.write(`ghreview ${v}\n`);
 }
 
+async function pingRunning(port: number): Promise<boolean> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 400);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}${IDENTITY_PATH}`, {
+      signal: ac.signal,
+    });
+    if (!r.ok) return false;
+    const data = (await r.json()) as { product?: string };
+    return data?.product === "ghreview";
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function targetUrl(port: number, input: string): string {
+  // Keep the user's original fragment so #issuecomment-... etc. still work.
+  const hashIdx = input.indexOf("#");
+  const hash = hashIdx >= 0 ? input.slice(hashIdx) : "";
+  const ref = parsePrUrl(input);
+  const path = `/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/pull/${ref.number}`;
+  return `http://127.0.0.1:${port}${path}${hash}`;
+}
+
 async function main() {
   let args: Args;
   try {
@@ -105,76 +129,49 @@ async function main() {
     process.exit(2);
   }
 
-  const ref = parsePrUrl(args.prUrl);
-  process.stdout.write(
-    `Fetching ${ref.owner}/${ref.repo}#${ref.number} via gh…\n`,
-  );
-
-  // Kick off the fetches in the background and boot the server against the
-  // pending promise. The browser can open immediately and will show a
-  // placeholder that auto-reloads once the data is in.
-  const ready = (async () => {
-    const [pr, authedUser, reviewState, issueComments, checks, commits, diff] =
-      await Promise.all([
-        fetchPrInfo(ref),
-        fetchAuthedUser(),
-        loadReviewState(ref),
-        fetchIssueComments(ref),
-        fetchChecksRollup(ref),
-        fetchPrCommits(ref),
-        fetchPrDiff(ref),
-      ]);
-    const gitattributes = await fetchFileAtRef(
-      ref,
-      ".gitattributes",
-      pr.headSha,
-    );
-    const generatedMatcher = buildGeneratedMatcher(gitattributes);
-    process.stdout.write(`\n  ${pr.title}\n`);
-    process.stdout.write(
-      `  +${pr.additions} −${pr.deletions} across ${pluralize(pr.changedFiles, "file")}\n`,
-    );
-    if (reviewState.pendingReview) {
+  // If an existing ghreview is already serving on the port, hand off to it
+  // instead of fighting for the bind.
+  if (await pingRunning(args.port)) {
+    if (args.prUrl) {
+      const url = targetUrl(args.port, args.prUrl);
       process.stdout.write(
-        `  pending review with ${pluralize(reviewState.pendingCommentIds.size, "comment")}\n`,
+        `An existing ghreview is running at http://127.0.0.1:${args.port}\nOpening ${url}\n`,
       );
+      if (!args.noOpen) open(url).catch(() => {});
+    } else {
+      const url = `http://127.0.0.1:${args.port}/`;
+      process.stdout.write(
+        `An existing ghreview is running at ${url}\n`,
+      );
+      if (!args.noOpen) open(url).catch(() => {});
     }
-    return {
-      pr,
-      diff,
-      authedUser,
-      generatedMatcher,
-      reviewState,
-      issueComments,
-      checks,
-      commits,
-    };
-  })();
+    return;
+  }
 
-  const server = await startServer({ ref, ready, port: args.port });
-  // Preserve any fragment from the input URL (e.g. #issuecomment-123 or
-  // #discussion_r456) so deep-link targets work when the client script
-  // translates them into local scroll targets.
-  const hashIdx = args.prUrl.indexOf("#");
-  const hash = hashIdx >= 0 ? args.prUrl.slice(hashIdx) : "";
-  const openUrl = server.prUrl + hash;
-  process.stdout.write(`\nServing at ${openUrl}\n`);
+  const preload = args.prUrl ? parsePrUrl(args.prUrl) : undefined;
+  const server = await startServer({ port: args.port, preload });
+
+  const hash = args.prUrl ? extractHash(args.prUrl) : "";
+  const openUrl = preload
+    ? server.urlFor(preload) + hash
+    : server.baseUrl + "/";
+
+  process.stdout.write(`Serving at ${server.baseUrl}\n`);
+  if (preload) {
+    process.stdout.write(`  → ${openUrl}\n`);
+  } else {
+    process.stdout.write(`  (no PR preloaded — visit the URL to pick one)\n`);
+  }
   process.stdout.write(`Press Ctrl+C to stop.\n`);
 
   if (!args.noOpen) {
-    open(openUrl).catch(() => {
-      // Non-fatal; URL is still printed.
-    });
+    open(openUrl).catch(() => {});
   }
 
   let shuttingDown = false;
   const shutdown = async () => {
-    if (shuttingDown) {
-      // Second signal: bail out hard.
-      process.exit(130);
-    }
+    if (shuttingDown) process.exit(130);
     shuttingDown = true;
-    // Hard-exit fallback in case something else pins the event loop.
     const timer = setTimeout(() => process.exit(130), 1500);
     timer.unref();
     try {
@@ -185,6 +182,11 @@ async function main() {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+function extractHash(input: string): string {
+  const i = input.indexOf("#");
+  return i >= 0 ? input.slice(i) : "";
 }
 
 main().catch((err) => {
