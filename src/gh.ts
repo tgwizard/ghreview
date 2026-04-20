@@ -340,6 +340,7 @@ export async function fetchPendingReview(
 export interface ThreadMetadata {
   nodeId: string;
   isResolved: boolean;
+  isOutdated: boolean;
 }
 
 export interface ReviewState {
@@ -385,6 +386,7 @@ async function fetchThreadMetadata(
             nodes{
               id
               isResolved
+              isOutdated
               comments(first:100){ nodes{ databaseId } }
             }
           }
@@ -405,7 +407,11 @@ async function fetchThreadMetadata(
       const conn = data.repository?.pullRequest?.reviewThreads;
       if (!conn) break;
       for (const t of conn.nodes ?? []) {
-        const meta: ThreadMetadata = { nodeId: t.id, isResolved: !!t.isResolved };
+        const meta: ThreadMetadata = {
+          nodeId: t.id,
+          isResolved: !!t.isResolved,
+          isOutdated: !!t.isOutdated,
+        };
         for (const c of t.comments?.nodes ?? []) {
           if (typeof c.databaseId === "number") out.set(c.databaseId, meta);
         }

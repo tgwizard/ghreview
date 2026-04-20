@@ -79,7 +79,11 @@ export function buildThreadIndex(
       path: root.path,
       line: root.line ?? root.originalLine,
       side: root.side ?? root.originalSide ?? "RIGHT",
-      isOutdated: root.line == null,
+      // GraphQL's reviewThread.isOutdated is authoritative. The REST
+      // heuristic (root.line == null) misses the mark for pending
+      // comments, which can legitimately have line=null but aren't
+      // "outdated" in the GitHub sense.
+      isOutdated: meta ? meta.isOutdated : root.line == null,
       isResolved: meta?.isResolved ?? false,
       hasPending,
     });

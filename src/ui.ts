@@ -317,10 +317,18 @@ function renderFile(
       : "";
 
   const unplaced = threadsForFile.filter((t) => !placedIds.has(t.id));
+  // These are threads we couldn't anchor to a visible diff row — either
+  // because the thread is outdated (line moved/removed) or because the
+  // commented line just isn't in any hunk being shown. The per-thread pill
+  // distinguishes outdated vs live, so don't prejudge in the header.
+  const unplacedHeader =
+    unplaced.length === 1
+      ? "1 thread outside the visible diff"
+      : `${unplaced.length} threads outside the visible diff`;
   const unplacedBlock =
     unplaced.length > 0
       ? `<div class="outdated-threads">
-        <div class="outdated-threads__header">${pluralize(unplaced.length, "outdated thread")} on this file</div>
+        <div class="outdated-threads__header">${unplacedHeader}</div>
         ${unplaced.map((t) => renderThread(t, ctx)).join("")}
       </div>`
       : "";
