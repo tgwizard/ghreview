@@ -163,8 +163,10 @@ export function renderPage(
 <section class="tab-panel" data-panel="files">
   <div class="layout">
     <aside class="sidebar">
-      <div class="sidebar-header">Files changed (${files.length})</div>
-      <nav class="file-tree">${fileTree}</nav>
+      <div class="sidebar-inner">
+        <div class="sidebar-header">Files changed (${files.length})</div>
+        <nav class="file-tree">${fileTree}</nav>
+      </div>
       <div class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
     </aside>
     <main class="content">
@@ -947,7 +949,11 @@ code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, mo
 .checks-pending { background: rgba(210, 153, 34, 0.15); color: #d29922; border-color: rgba(210, 153, 34, 0.4); }
 
 .layout { display: grid; grid-template-columns: var(--sidebar-width, 300px) 1fr; min-height: calc(100vh - 80px); }
-.sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); overflow-y: auto; position: sticky; top: 118px; height: calc(100vh - 118px); }
+/* Scroll lives on .sidebar-inner so .sidebar is a clean positioning
+   context for the absolutely-positioned resize handle. Otherwise CSS
+   forces overflow-x to match overflow-y and clips the handle. */
+.sidebar { border-right: 1px solid var(--border); background: var(--bg-elev); position: sticky; top: 118px; height: calc(100vh - 118px); }
+.sidebar-inner { height: 100%; overflow-y: auto; }
 .sidebar-resize-handle { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 20; }
 .sidebar-resize-handle:hover, .sidebar-resize-handle.dragging { background: var(--accent); opacity: 0.35; }
 body.sidebar-resizing { user-select: none; cursor: col-resize; }
