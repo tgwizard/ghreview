@@ -28,7 +28,7 @@
     "highlight.js": "11.11.1",
     "marked": "18.0.2",
     "open": "10.2.0",
-    "parse-diff": "0.11.1",
+    "parse-diff": "0.12.0",
     "sanitize-html": "2.17.3",
     "tsx": "4.21.0",
     "typescript": "5.9.3"
